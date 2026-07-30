@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "federated-rnn-cesnet"
+version = "1.0.0"
+description = "Classificazione federata del tipo di dispositivo dal traffico di rete (CESNET-TimeSeries24)"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "flwr[simulation]>=1.28.0",
+    "torch>=2.7.0",
+    "cesnet-tszoo>=2.2.0",
+    "scikit-learn>=1.4.0",
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    # Serve a cesnet-tszoo
+    "ipython",
+    matplotlib>=3.8.0
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["fedrnn"]
+
+[tool.flwr.app]
+publisher = "leti"
+
+[tool.flwr.app.components]
+serverapp = "fedrnn.server_app:app"
+clientapp = "fedrnn.client_app:app"
+
+
+# -- CONFIGURAZIONE DELLA RUN --
+
+# Si possono sovrascrivere senza cambiare il file:
+#     flwr run . --run-config "num-server-rounds=2 fraction-train=0.1"
+
+[tool.flwr.app.config]
+num-server-rounds = 50
+fraction-train = 0.5
+fraction-evaluate = 0.5
+local-epochs = 2
+# Il valore di learning rate è stato scelto con lr_find() nella versione di partenza centralizzata
+learning-rate = 0.000692
+weight-decay = 0.01
+batch-size = 64
+
+# Il learning rate cala di questo fattore 0.97 a ogni round, quindi l'ultimo passo vale il 22% del primo. 
+lr-decay = 0.97
+
+# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam, fedyogi)
+strategy = "fedavg"
+
+# Quanto il server modifica i pesi del modello globale quando riceve aggiornamenti dai client
+# NOTA: vale solo per FedAdam e FedYogi perchè loro fanno ottimizzazioni lato server 
+# DEFAULT: 0.1 con macro-f1 0,5947 mentre 0.01 con macro-f1 0,5915 
+# CONCLUSIONE: nessuna differenza con oscillazione FedAdam
+server-learning-rate = 0.01
+
+# Controlla quanto i modelli dei client devono rimanere vicini al modello globale
+# aggiungendo un termine di penalizzazione alla funzione di perdita
+proximal-mu = 0.1
+
+
+# -- SIMULAZIONE DELLA FEDERAZIONE --
+
+# num-supernodes = 69 perchè corrisponde al numero di subnet istituzionali con almeno 10 indirizzi etichettati.
+#   Si può modificare con --min-subnet-size. Se i valori non coincidono, la ClientApp si ferma con un errore esplicito per evitare che una
+#   parte del dataset resti inutilizzata.
+
+# Su questa macchina (16 core, 7,4 GB di RAM, RTX 5060 con 8 GB VRAM) e num-cpus = 8 girano due client per volta.
+# NOTA: Ray (motore di calcolo distribuito per simulare l'infrastruttura federated) uccide un worker quando si supera il 95% di utilizzo.
+#   8 client insieme (default di Ray, 2 core l'uno)  ~0,7 GB l'uno  -> 7,06 GB, ucciso
+#   4 client insieme (4 core l'uno)                  ~1,4 GB l'uno  -> 7,11 GB, ucciso
+#   2 client insieme (8 core l'uno)                                 -> quello che usiamo
+
+# num-gpus = 0.5 per avere due client concorrenti
+
+# Scritto in automatico da flwr
+# Alla prima esecuzione di questo codice, flwr lancia un warning ed esegue l'automigrazione (con creazione del file di configurazione)
+
+[tool.flwr.federations]
+default = "local-simulation"
+
+[tool.flwr.federations.local-simulation]
+options.num-supernodes = 69
+options.backend.client-resources.num-cpus = 8
+options.backend.client-resources.num-gpus = 0.5
