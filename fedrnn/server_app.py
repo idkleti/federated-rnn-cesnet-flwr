@@ -1,6 +1,6 @@
 # server app
 
-# raccolgo statistiche dati -> costruisco modello iniziale -> far girare FedAvg per N round valutando a ogni round sul test set a parte ->
+# raccolgo statistiche dati -> costruisco modello iniziale -> far girare la strategia scelta per N round valutando a ogni round sul test set a parte ->
 # -> salva modello e storico
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from flwr.app import (
 )
 
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAdam, FedAvg, FedProx, FedYogi, Strategy
+from flwr.serverapp.strategy import FedAdam, FedAvg, FedProx, Strategy
 
 from fedrnn import config as cfg
 from fedrnn.data import build_server_test_loader, load_meta, statistics_to_mean_std
@@ -54,8 +54,8 @@ CONFUSION_KEY = "confusion"
 
 
 def _timeout_per_nodi(expected: int, *, base: float, per_nodo: float) -> float:
-    # il timeout dipende dal numero di nodi
-    return max(base, base + per_nodo * expected)
+    # parto da un'attesa fissa e ci aggiungo un tanto per ogni nodo che aspetto
+    return base + per_nodo * expected
 
 def wait_for_nodes(
     grid: Grid, expected: int, *, timeout: float | None = None
@@ -114,14 +114,13 @@ def build_strategy(
         # proximal_mu è la forza del richiamo verso il modello globale.
         # se mu = 0 allora FedProx == FedAvg
         return FedProx(**comuni, proximal_mu=proximal_mu)
-    if chiave in {"fedadam", "fedyogi"}:
+    if chiave == "fedadam":
         # eta è il passo del server
-        cls = FedAdam if chiave == "fedadam" else FedYogi
-        return cls(**comuni, eta=server_learning_rate)
+        return FedAdam(**comuni, eta=server_learning_rate)
 
     raise ValueError(
         f"Strategia {name!r} non riconosciuta. Valori ammessi: "
-        "fedavg, fedprox, fedadam, fedyogi."
+        "fedavg, fedprox, fedadam."
     )
 
 # Round di statistiche
@@ -366,7 +365,7 @@ def main(grid: Grid, context: Context) -> None:
     )
 
 
-    # se invio i vettori ogni volta anzichè una solo posso evitare di dover mantenere uno stato sul client fra un round e l'altro
+    # se invio i vettori ogni volta anzichè una volta sola posso evitare di dover mantenere uno stato sul client fra un round e l'altro
     shared_config = {
         "lr": lr,
         "lr-decay": lr_decay,
@@ -434,7 +433,7 @@ def main(grid: Grid, context: Context) -> None:
                 "strategy": strategy_name,
                 "lr_decay": lr_decay,
                 "server_learning_rate": (
-                    server_lr if strategy_name in {"fedadam", "fedyogi"} else None
+                    server_lr if strategy_name == "fedadam" else None
                 ),
                 "proximal_mu": proximal_mu if strategy_name == "fedprox" else None,
                 "num_rounds": num_rounds,
