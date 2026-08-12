@@ -353,7 +353,7 @@ def main(grid: Grid, context: Context) -> None:
         f"{meta['pool_size']:,}",
         f"{meta['server_test_size']:,}",
     )
-    log.info("Strategia: FedAvg | round: %d", num_rounds)
+    log.info("Strategia: %s | round: %d", strategy_name, num_rounds)
     log.info("Shard letti da %s", cfg.SHARD_ROOT)
     log.info("=" * 78)
 
