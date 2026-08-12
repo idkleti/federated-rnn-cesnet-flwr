@@ -5,7 +5,7 @@
 # per avviare:
 #       python tools/grafici.py
 
-# leggere outputs/history_*.json e shards/meta.json e scrive in outputs/figure/
+# legge outputs/history_*.json e shards/meta.json e scrive in outputs/figure/
 
 from __future__ import annotations
 
