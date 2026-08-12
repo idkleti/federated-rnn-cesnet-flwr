@@ -17,6 +17,8 @@ La federazione è fatta di **69 client**, uno per subnet, con 82.527 indirizzi
 distribuiti fra loro e 9.238 tenuti da parte dal server per la valutazione
 finale.
 
+La presenza dei dati di test sul server è solo per scopo "educativo" per capire quanto si perde a federare. In una situazione reale, il server non contiene dati di test.
+
 | | macro-F1 |
 |---|---|
 | RNN centralizzata (progetto di partenza) | 0,7615 |
