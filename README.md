@@ -39,7 +39,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 python prepare_data.py     # scarica 3,2 GB e scrive i 69 shard (la prima volta)
-flwr run . --stream
+flwr run . --stream        # aggiungere PYTHONUNBUFFERED=1 qualora il log non venisse mostrato correttamente ad ogni run
 python tools/grafici.py
 ```
 
@@ -49,10 +49,10 @@ Gli iperparametri si cambiano in `pyproject.toml` oppure da linea di comando:
 flwr run . --run-config "num-server-rounds=100 strategy=\"fedadam\""
 ```
 
-**Se la simulazione viene interrotta per esaurimento di memoria**, alza
-`num-cpus` in `pyproject.toml`: più core per client significano meno client
-contemporaneamente. 
+**Se la simulazione viene interrotta per esaurimento di memoria**, alza `num-cpus` in `pyproject.toml`.
 I valori attuali sono tarati su una macchina con 16 core e 7,4 GB di RAM.
+
+**Se la simulazione viene interrotta e non viene mostrato alcun errore in console**, killare tutti i processi di flower e riavviare la simulazione.
 
 ## Struttura del progetto
 
