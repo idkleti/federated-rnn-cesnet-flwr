@@ -15,8 +15,7 @@ Il modello inviato al server viene selezionato in base alla macro-f1 score migli
 
 ## La federazione
 
-Un client per subnet istituzionale, con la soglia di dieci indirizzi etichettati
-sotto la quale una subnet non diventa client.
+Un client per subnet istituzionale, con la soglia di dieci indirizzi etichettati sotto la quale una subnet non diventa client.
 
 | | |
 |---|---|
@@ -126,8 +125,7 @@ Siccome FedAvg pesa per numero di campioni, il client 0 vale da solo più del tr
 
 ## Conclusione generale e riepilogo
 **In federazione i pesi di classe non bastano.** 
-Assegnare peso 15 al net-device funziona dentro la funzione di costo di un client che i net-device ce li ha; un client che non ne possiede nemmeno uno non può usarlo, e il suo aggiornamento spinge comunque verso la classe maggioritaria. È una differenza sostanziale rispetto al caso centralizzato, dove
-ogni batch contiene un campione di tutte le classi.
+Assegnare peso 15 al net-device funziona dentro la funzione di costo di un client che i net-device ce li ha; un client che non ne possiede nemmeno uno non può usarlo, e il suo aggiornamento spinge comunque verso la classe maggioritaria. È una differenza sostanziale rispetto al caso centralizzato, dove ogni batch contiene un campione di tutte le classi.
 
 | | macro-F1 |
 |---|---|
