@@ -52,7 +52,6 @@ CONFUSION_KEY = "confusion"
 
 # nel caso un timeout dovesse scadere la simulazione parte comunque 
 
-
 def _timeout_per_nodi(expected: int, *, base: float, per_nodo: float) -> float:
     # parto da un'attesa fissa e ci aggiungo un tanto per ogni nodo che aspetto
     return base + per_nodo * expected
