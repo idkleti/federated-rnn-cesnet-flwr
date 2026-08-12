@@ -41,7 +41,8 @@ from fedrnn import config as cfg
 log = logging.getLogger("prepare_data")
 
 # quante serie carico in memoria per volta
-# get_train_numpy le materializza tutte insieme, e 8000 serie sono circa 160 MB in float32
+# get_train_numpy le materializza tutte insieme e lavora in float64, quindi 8000 serie sono circa 320 MB
+# (nello shard poi ci finiscono in float32, cioè la metà)
 CHUNK_SERIES = 8000
 
 # worker di TS-Zoo per leggere dall'HDF5
@@ -71,7 +72,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-# Le etichette non si trovano dentro le serie temporali ma all'interno di device_type_id_address_full (annotazione a parte), che copre solo 
+# Le etichette non si trovano dentro le serie temporali ma all'interno di device_type_ip_address_full (annotazione a parte), che copre solo 
 # una parte di tutti gli indirizzi
 
 # tutti quelli senza classificazione di dispositivo e indirizzi non etichettati vengono scartati
@@ -154,22 +155,11 @@ def holdout_split(
 
 # Scelta di divisione: utilizzo la subnet istituzionale perchè così ho più gruppi rispetto a dividere per istituzione (548 - 283)
 
-# la tabella ids_relationship del dataset collega gli identificati tra i diversi livelli di aggregazione (quale indirizzi sta in quale
-# subnet istituzionale e quale subnet in quale istituzione), tuttavia i nomi esatti delle colonne non sono documentati in modo stabile tra le 
+# la tabella ids_relationship del dataset collega gli identificatori tra i diversi livelli di aggregazione (quale indirizzo sta in quale
+# subnet istituzionale e quale subnet in quale istituzione), tuttavia i nomi esatti delle colonne non sono documentati in modo stabile tra le
 # versioni della libreria quindi si cercano anzichè fissarli
-def resolve_group_column(
-    relationship: pd.DataFrame,
-    ts_id_col: str,
-    requested: str | None,
-) -> str:
+def resolve_group_column(relationship: pd.DataFrame, ts_id_col: str) -> str:
     candidates = [c for c in relationship.columns if c != ts_id_col]
-    if requested is not None:
-        if requested not in relationship.columns:
-            raise SystemExit(
-                f"La colonna {requested!r} non esiste in ids_relationship. "
-                f"Colonne disponibili: {list(relationship.columns)}"
-            )
-        return requested
 
     for keyword in ("subnet", "institution"):
         for col in candidates:
@@ -215,7 +205,7 @@ def apply_min_subnet_size(
 
 # ogni client racchiude al suo interno una sola intera subnet e vengono ordinati per grandezza in modo decrescente
 def partition_by_group(group_ids: np.ndarray) -> list[np.ndarray]:
-    # group_ids[i] indentifica il gruppo di un campione i e restituisce un array di indici, uno per gruppo, in ordine decrescente
+    # group_ids[i] identifica il gruppo di un campione i e restituisce un array di indici, uno per gruppo, in ordine decrescente
     members: dict[object, list[int]] = defaultdict(list)
     for idx, gid in enumerate(group_ids):
         members[gid].append(idx)
@@ -226,7 +216,8 @@ def partition_by_group(group_ids: np.ndarray) -> list[np.ndarray]:
 
 # carico le serie grezze a blocchi 
 
-# faccio a blocchi perchè get_train_numpy carica tutto in memoria (83141 serie sono 7 GB di memoria in una botta sola)
+# faccio a blocchi perchè get_train_numpy carica tutto in memoria
+# le 83141 serie del pool sono 3,1 GB in float64, che diventano il doppio nel momento in cui le impila una sull'altra, e su 7,4 GB di RAM non ci stanno
 def load_raw_series(
     dataset,
     ts_ids: np.ndarray,
@@ -421,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # partizione per subnet istituzionale
     relationship = dataset.get_additional_data("ids_relationship")
-    group_col = resolve_group_column(relationship, ts_id_col, None)
+    group_col = resolve_group_column(relationship, ts_id_col)
     log.info(
         "Partizione per gruppo naturale sulla colonna %r (%s gruppi nel dataset)",
         group_col,
@@ -509,8 +500,8 @@ def main(argv: list[str] | None = None) -> int:
         "feature_names": list(cfg.FEATURE_NAMES),
         "seq_len": int(cfg.SEQ_LEN),
         "num_features": int(cfg.NUM_FEATURES),
-        "pool_size": int(summary["samples_total"]), # soglia prima delle subnet
-        "pool_size_before_threshold": int(len(pool_ids)), # soglia dopo le subnet
+        "pool_size": int(summary["samples_total"]), # indirizzi rimasti dopo aver scartato le subnet sotto soglia
+        "pool_size_before_threshold": int(len(pool_ids)), # e quanti erano prima di scartarle
         "server_test_size": int(len(test_ids)),
         "server_test_class_counts": {
             name: int((test_y == idx).sum())
