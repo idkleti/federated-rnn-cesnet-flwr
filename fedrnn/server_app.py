@@ -89,21 +89,17 @@ def build_strategy(
     *,
     fraction_train: float,
     fraction_evaluate: float,
-    min_train_nodes: int,
-    min_evaluate_nodes: int,
-    min_available_nodes: int,
     server_learning_rate: float,
     proximal_mu: float,
     train_sink: dict,
     evaluate_sink: dict,
 ) -> Strategy:
     # costruzione della strategia richiesta con aggregatori di metriche
+
+    # non passo min_train_nodes/min_evaluate_nodes perchè flwr campiona max(frazione x nodi, minimo) e con 69 client la frazione dà sempre più del minimo (default 2)
     comuni = {
         "fraction_train": fraction_train,
         "fraction_evaluate": fraction_evaluate,
-        "min_train_nodes": min_train_nodes,
-        "min_evaluate_nodes": min_evaluate_nodes,
-        "min_available_nodes": min_available_nodes,
         "weighted_by_key": WEIGHT_KEY,
         "train_metrics_aggr_fn": partial(aggregate_train_metrics, sink=train_sink),
         "evaluate_metrics_aggr_fn": partial(
@@ -528,15 +524,10 @@ def main(grid: Grid, context: Context) -> None:
 
     
     # Costruzione della strategia
-    n_eval_nodes = max(2, int(num_partitions * fraction_evaluate))
-
     strategy = build_strategy(
         strategy_name,
         fraction_train=fraction_train,
         fraction_evaluate=fraction_evaluate,
-        min_train_nodes=n_train_nodes,
-        min_evaluate_nodes=n_eval_nodes,
-        min_available_nodes=max(2, min(num_partitions, n_train_nodes)),
         server_learning_rate=server_lr,
         proximal_mu=proximal_mu,
         train_sink=history_train,
