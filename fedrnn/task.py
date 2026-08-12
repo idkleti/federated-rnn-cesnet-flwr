@@ -184,7 +184,8 @@ def confusion_matrix(
     num_classes: int = NUM_CLASSES,
 ) -> np.ndarray:
     flat = y_true.astype(np.int64) * num_classes + y_pred.astype(np.int64)
-    counts = np.bincount(flat, minlength=num_classes * num_classes) # la preferisco a scikit-learn perchè la invoco ogni round e costerebbe memoria
+    counts = np.bincount(flat, minlength=num_classes * num_classes) # la preferisco a quella di scikit-learn perchè sono due righe
+        # e non ripassa dai suoi controlli sugli array, che qui si pagherebbero a ogni round
     return counts.reshape(num_classes, num_classes)
 
 
@@ -205,7 +206,8 @@ def metrics_from_confusion(cm: np.ndarray) -> dict[str, float]:
         denom = precision + recall
         f1 = np.where(denom > 0, 2 * precision * recall / denom, 0.0)
 
-    # l'accuratezza bilanciata è la media dei recall e viene calcolata solo sulle classi 
+    # l'accuratezza bilanciata è la media dei recall, e la calcolo solo sulle classi che compaiono davvero quindi
+    # una classe che nella matrice non c'è avrebbe recall 0 e mi tirerebbe giù la media senza dire niente sul modello
     present = support > 0
     balanced_accuracy = float(recall[present].mean()) if present.any() else 0.0
 
