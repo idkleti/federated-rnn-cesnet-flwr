@@ -1,7 +1,7 @@
 # CLIENT APP
 # Strutturato con 3 handler:
 #   1. risposta alla richiesta di statistiche che il server manda la prima volta
-#   2. e 3. sono le due metà di ciascun round di FedAvg per addestrare e valutare il modello globale sui dati locali
+#   2. e 3. sono le due metà di ciascun round, cioè addestrare e valutare il modello globale sui dati locali
 # I dati visibili sono solo quelli del proprio shard 
 
 from __future__ import annotations
@@ -111,7 +111,7 @@ def train(msg: Message, context: Context) -> Message:
         std=std,
     )
 
-    # per il lr, il server manda il valore iniziare e il fattore di decadimento poi flwr inserisce da solo il numero round dentro il config
+    # per il lr, il server manda il valore iniziale e il fattore di decadimento poi flwr inserisce da solo il numero round dentro il config
     # la formula del decadimento è lr * decay^(round-1), dove al primo round = lr
 
     # NOTA: proximal-mu c'è solo quando uso FedProx come strategia, quindi nelle altre resta a 0
