@@ -78,7 +78,7 @@ outputs/               storici delle run e figure
 ```
 
 ## Risultati
-All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano 15 esecuzioni complete (due per configurazione), con il confronto tra strategie di aggregazione e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
+All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano 15 esecuzioni complete (due per configurazione più una run con FedAdam e server-learning-rate=0.1), con il confronto tra strategie di aggregazione e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
 
 **In breve, la configurazione migliore è FedAvg con fraction-train = 0.5**.
 Il divario di tredici punti della macro f1-score rispetto al centralizzato è dovuto alle classi **server** e **net-device**.
