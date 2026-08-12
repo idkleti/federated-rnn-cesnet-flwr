@@ -3,7 +3,7 @@
 Sono state effettuate 15 esecuzioni complete su WSL2 (16 core, 7,4 GB di RAM, RTX 5060 con 8 GB). 
 I comandi che le hanno prodotte stanno in [`tools/esperimenti.sh`](tools/esperimenti.sh) mentre gli storici round per round in `outputs/history_*.json`, e le figure si rigenerano con `python tools/grafici.py`.
 
-Ogni configurazione è stata eseguita **due volte**.
+Ogni configurazione è stata eseguita **due volte** più FedAdam con server-learning-rate=0.1 che è stata eseguita una volta.
 
 ## Cosa viene confrontato con cosa
 
@@ -38,8 +38,7 @@ I risultati degli esperimenti sono stati raggruppati in una tabella che indica (
 * **scarto**: quanto quel risultato è affidabile (calcolato come distanza tra le due esecuzioni)
 * **coda**: quanto vale un modello tipico verso la fine dell'addestramento
 * **dev.std**: deviazione standard della macro-f1 sui 31 round
-* **net-dev a zero**: in quanti degli ultimi 31 round il modello aveva
-  smesso del tutto di riconoscere i net-device
+* **net-dev a zero**: in quanti degli ultimi 31 round il modello aveva smesso del tutto di riconoscere i net-device
 
 **Coda** e **dev. std** descrivono gli ultimi 31 round e dicono quanto è buono e quanto è stabile l'addestramento. Vengono considerati gli ultimi 31 round (nelle esecuzioni da 50 round) perché nei primi venti il modello sta ancora imparando da zero.
 
@@ -97,6 +96,8 @@ Il progetto usa `server-learning-rate = 0.01` invece del default di Flower pari 
 | end-device | 0,9642 | 0,9540 | 0,0102 | 3% |
 | net-device | 0,6304 | 0,5053 | 0,1251 | 31% |
 | **server** | 0,6900 | **0,4266** | **0,2634** | **66%** |
+
+La colonna *federato* è la media delle due esecuzioni. La matrice di confusione più sotto invece viene da una sola run, la migliore delle due, quindi ricavando la F1 da lì sui net-device esce 0,5134 e non 0,5053.
 
 **Due terzi del divario vengono dalla classe `server`** che resta bassa per tutta la durata dell'addestramento.
 Tuttavia, questo non è un problema di distribuzione poichè i server sono la classe meglio distribuita delle 3 (al contrario dei net-device che sono concentrati in pochi client che spesso non vengono campionati):
