@@ -39,7 +39,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 python prepare_data.py     # scarica 3,2 GB e scrive i 69 shard (la prima volta)
-flwr run .
+flwr run . --stream
 python tools/grafici.py
 ```
 
@@ -76,9 +76,6 @@ tools/
   grafici.py           le figure, rigenerate dagli storici delle run
 outputs/               storici delle run e figure
 ```
-
-Il dataset, gli shard e l'ambiente Python non sono nel repository: si
-ricostruiscono con i comandi qui sopra.
 
 ## Risultati
 All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano 15 esecuzioni complete (due per configurazione), con il confronto tra strategie di aggregazione e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
