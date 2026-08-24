@@ -26,6 +26,9 @@ packages = ["fedrnn"]
 [tool.flwr.app]
 publisher = "leti"
 
+# escludo dal fab di flwr gli storici e le figure perchè ad ogni esecuzione nasceva il problema del "FAB size exceeds maximum allowed size" (max 10MB)
+fab-exclude = ["outputs/**", ".gitignore"]
+
 [tool.flwr.app.components]
 serverapp = "fedrnn.server_app:app"
 clientapp = "fedrnn.client_app:app"
@@ -78,6 +81,7 @@ proximal-mu = 0.1
 # num-gpus = 0.5 per avere due client concorrenti
 
 # Alla prima esecuzione di questo codice, flwr lancia un warning ed esegue l'automigrazione (con creazione del file di configurazione)
+
 
 [tool.flwr.federations]
 default = "local-simulation"
