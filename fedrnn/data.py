@@ -138,6 +138,43 @@ def client_train_val_split(
     return np.sort(train_idx), np.sort(val_idx)
 
 
+# Righe prestate ad altri client (--rebalance-net-device N)
+# quando N != 0, lo shard di un client contiene prima i suoi indirizzi e poi le copie ricevute dagli altri (che finiscono solo in addestramento).
+
+# il motivo per cui non finiscono in validazione è perché la macro-f1 federata calcolata è la metrica con cui il server sceglie il modello da consegnare, quindi
+# se una serie prestata finisse nella validazione di chi la riceve, il modlelo verrebbe valutato su una serie che potrebbe aver già visto da un altro client.
+def _righe_proprie(partition_id: int, n_totale: int) -> int:
+    # own_net_device viene scritto da prepare_data.py in meta.json
+    # se manca allora tutte le righe sono del client
+    own = load_meta().get("own_per_client")
+    if not own:
+        return n_totale
+    return int(own[partition_id])
+
+
+def _split_locale(
+    y: np.ndarray,
+    partition_id: int,
+    *,
+    val_fraction: float,
+    random_state: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    # come client_train_val_split, ma divide solo le righe proprie e mette le prestate in addestramento
+    n_own = _righe_proprie(partition_id, len(y))
+
+    train_idx, val_idx = client_train_val_split(
+        y[:n_own],
+        val_fraction=val_fraction,
+        partition_id=partition_id,
+        random_state=random_state,
+    )
+    if n_own >= len(y):
+        return train_idx, val_idx
+
+    prestate = np.arange(n_own, len(y))
+    return np.concatenate([train_idx, prestate]), val_idx
+
+
 # statistiche locali per standardizzazione federata
 
 # scrivo media e varianza come funzioni di tre somme (numero di valori, somma di valori, somma di quadrati) in modo tale che ogni client le calcoli
@@ -152,7 +189,8 @@ def local_feature_statistics(
 ) -> dict[str, list[float]]:
     # numero di valori e somme aggregati come float64
 
-    # indices seleziona la serie da usare senza creare una copia in memoria
+    # indices dice quali serie usare, così chi chiama non deve costruirsi una copia intera di X
+    # (il blocco da 256 serie qui sotto viene copiato, ma è piccolo ed è il motivo per cui il ciclo esiste)
     rows = np.arange(X.shape[0]) if indices is None else np.asarray(indices)
     n_features = X.shape[1]
 
@@ -199,13 +237,13 @@ def build_client_loaders(
     val_fraction: float = config.CLIENT_VAL_FRACTION,
     random_state: int = config.RANDOM_STATE,
 ) -> tuple[DataLoader, DataLoader, np.ndarray]:
-    # recupero delle etichette per comunicare al server quanti campioni ha davvero usato 
+    # recupero delle etichette per comunicare al server quanti campioni ha davvero usato
     X, y, _ = load_shard(config.client_shard_path(partition_id), mean=mean, std=std)
 
-    train_idx, val_idx = client_train_val_split(
+    train_idx, val_idx = _split_locale(
         y,
+        partition_id,
         val_fraction=val_fraction,
-        partition_id=partition_id,
         random_state=random_state,
     )
 
@@ -240,12 +278,12 @@ def client_training_statistics(
     val_fraction: float = config.CLIENT_VAL_FRACTION,
     random_state: int = config.RANDOM_STATE,
 ) -> tuple[dict[str, list[float]], np.ndarray]:
-    # uso solo la parte di addestramento
+    # uso solo la parte di addestramento, che potrebbe contenere anche i dati ricevuti da altri
     X, y, _ = load_shard(config.client_shard_path(partition_id))
-    train_idx, _ = client_train_val_split(
+    train_idx, _ = _split_locale(
         y,
+        partition_id,
         val_fraction=val_fraction,
-        partition_id=partition_id,
         random_state=random_state,
     )
     return local_feature_statistics(X, train_idx), y[train_idx]

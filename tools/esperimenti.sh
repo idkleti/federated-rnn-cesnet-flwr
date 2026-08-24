@@ -1,52 +1,91 @@
 #!/usr/bin/env bash
 
 # Questo file contiene le run mostrate in RISULTATI.md
-# Tempo totale di addestramento per la mia macchina (specifiche in ../RISULTATI.md): 1h 50m
+# Tempo totale di addestramento per la mia macchina: circa 28 ore
 
 # Eseguibile con:
-#     source venv/bin/activate
+#     source venv/bin/activate  # versione python3.12 preferibilmente
 #     bash tools/esperimenti.sh
-# solo dopo aver caricato gli shard (python prepare_data.py)
+# solo dopo aver scaricato il dataset ed eventualmente caricato le shard (python prepare_data.py)
+# NOTA: ad ogni esecuzione vengono aggiunti nuovi file in ../outputs/
 
-# ATTENZIONE: se lo rilanci, vengono aggiunte altre 15 run in outputs/ e i risultati combinati con le nuove run non saranno più gli stessi documentati!!
+# Per evitare di dover lasciare in esecuzione per 28 ore, commentare i blocchi che non servono e lanciarne uno per volta
+
+# Nel progetto le configurazioni vengono ripetute 25 volte poichè con solo un paio di esecuzioni non è possibile distinguere tra coincidenza e risultati veri
 
 set -u # fallisce se uso variabile non definita
 cd "$(dirname "$0")/.." # mi sposto sopra perchè flwr deve essere eseguito nella stessa dir di pyproject.toml
 
+R=50   # round per le run normali
+N=25   # quante volte ripetere ogni configurazione
+
 esegui() {
     echo "==> $*"
-    flwr run . --run-config "$*" --stream 2>&1 \
-        | grep -E "fedrnn.server" \
-        | grep -E "Fine\.|macro-F1 sul test"
+    for i in $(seq 1 $N); do
+        printf '  [%2d/%2d] %s  ' "$i" "$N" "$(date +%H:%M:%S)"
+        flwr run . --run-config "$*" --stream 2>&1 \
+            | grep -oE "modello selezionato: [0-9.]+" | tail -1
+    done
 }
 
-R=50
 
-# 1. fraction-train = 0.3 e fraction-train = 0.5
+# RUN EFFETTUATE in maniera "realistica" (dati divisi per subnet)
+python prepare_data.py
+
+
+# 1. il numero di client che partecipano viene modificato al 30%, 50% e 100%
 esegui "num-server-rounds=$R fraction-train=0.3 lr-decay=1.0 strategy=\"fedavg\""
-esegui "num-server-rounds=$R fraction-train=0.3 lr-decay=1.0 strategy=\"fedavg\""
-
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
-
-# 2. fraction-train = 1 (scenario NON realistico)
-esegui "num-server-rounds=$R fraction-train=1.0 lr-decay=1.0 strategy=\"fedavg\""
 esegui "num-server-rounds=$R fraction-train=1.0 lr-decay=1.0 strategy=\"fedavg\""
 
-# 3. learning rate con decadimento
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
+
+# 2. learning rate con decadimento
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
-# 4. strategie alternative per cercare miglioramenti (vedi RISULTATI.md)
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\""
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\""
 
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\""
+# 3. strategie alternative al punto 2 con stessa partecipazione del 50% e decadimento learning rate
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\""
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\""
 
-# 5. 100 round anzichè 50
-esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
+
+# 4. 100 round anzichè 50
 esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
 
-# 6. verifica per FedAdam del server-learning-rate
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\" server-learning-rate=0.1"
+
+# RUN SPERIMENTALI (dati divisi randomicamente, copia della classe minoritaria e mantenimento della grandezza dei client iniziali ma con dati casuali)
+# Una volta effettuati i primi 4 punti, la configurazione di addestramento migliore (fedavg, partecipazione 0.5, decadimento 0.97) viene fissata
+# e l'unica cosa che cambia è come vengono divisi i dati per vedere se si può guadagnare qualcosa e come l'eterogeneità dei client influisce sul modello
+
+# Il progetto è in grado di eseguire tutte le configurazioni reali e sperimentali, l'unica cosa da cambiare è come vengono creati gli shard
+
+# La modalità usata è registrata in shards/meta.json (campi partition e rebalance_net_device), nome file history e campo partition in history
+
+# !! IL TEST SET DEL SERVER NON VIENE MODIFICATO E RIMANE SEMPRE LO STESSO AD OGNI ESECUZIONE 
+
+# 5. indirizzi mescolati a caso con dimensione dei client uguale
+python prepare_data.py --partition random
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
+
+
+# 6. copia della classe minoritaria (net-device) per rilassare ipotesi del federated learning
+
+# Questa idea è la stessa nel paper Zhao et al. 2018 "Federated Learning with Non-IID Data" dove
+# un insieme ristretto e condiviso (in questo caso di net-device) viene distribuito a tutti i partecipanti
+
+# Le serie prestate sono 425 e sono tutte diverse per evitare che il modello impari a memoria le stesse serie ripetute
+
+# Le righe prestate sono in coda allo shard e non entrano nella validazione locale perchè sennò il modello validerebbe
+# una serie che potrebbe aver già visto in addestramento in precedenza, aumentando la f1 score senza alcun miglioramento reale
+
+# Con N=10 ricevono copie i 53 client che ne hanno meno di dieci (27 non ne hanno nemmeno uno e 26 che ne hanno fra uno e nove)
+python prepare_data.py --rebalance-net-device 10
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
+
+# 7. indirizzi mescolati con dimensioni delle subnet reali
+python prepare_data.py --partition random-sizes
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
+
+# La divisione per istituzione non viene effettuata poichè risulterebbe troppo simile alla divisione per subnet
+
+# per generare le figure:
+#     python tools/grafici.py

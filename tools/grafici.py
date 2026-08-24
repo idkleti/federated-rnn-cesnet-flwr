@@ -38,9 +38,8 @@ COLORI = {
 
 # lettura delle history degli esperimenti
 
-# - all'interno di ogni file history_*.json ogni run scrive la propria configurazione e metriche round per round e si vanno a leggere 
-#       SOLO le run complete
-# - le run vengono raggruppate per strategia, fraction-train, decadimento lr, numero di round
+# - all'interno di ogni file history_*.json ogni run scrive la propria configurazione e metriche round per round e si vanno a leggere SOLO le run complete
+# - le run vengono raggruppate per partizione, ribilanciamento, strategia, fraction-train, decadimento lr, numero di round e passo del server
 
 ROUND_MINIMI = 10
 
@@ -49,11 +48,10 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
     for percorso in sorted(cartella.glob("history_*.json")):
         h = json.loads(percorso.read_text(encoding="utf-8"))
         run = h["run"]
+        part = h.get("partition", {})
         n_round = int(run["num_rounds"])
 
         if n_round < ROUND_MINIMI:
-            continue
-        if h.get("partition", {}).get("kind") != "subnet":
             continue
         if not run.get("completed", False):
             continue
@@ -62,8 +60,12 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
 
         # il passo del server di FedAdam fa parte della chiave altrimenti run con eta diverso verrebbero messe assieme
         # per le altre strategie vale None
+
+        # partizione e ribilanciamento vengono inserite nella chiave per dividere run con stessi iperparametri ma partizione/ribilanciamento diverso
         chiave = (
             run.get("strategy", "fedavg"),
+            part["kind"],
+            int(part.get("rebalance_net_device", 0) or 0),
             float(run["fraction_train"]),
             float(run.get("lr_decay", 1.0)),
             n_round,
@@ -73,11 +75,22 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
     return gruppi
 
 
+# come si chiama una partizione nelle legende dei grafici
+NOME_PARTIZIONE = {
+    "subnet": "subnet",
+    "random": "casuale",
+    "random-sizes": "casuale a dimensioni reali",
+}
+
+
 def etichetta(chiave: tuple) -> str:
-    strategia, ft, decay, n_round, server_lr = chiave
-    testo = f"{strategia}, partecipazione {ft:g}"
+    strategia, partizione, ribilanciamento, ft, decay, n_round, server_lr = chiave
+    testo = f"{strategia}, {NOME_PARTIZIONE.get(partizione, partizione)}"
+    if ribilanciamento:
+        testo += f" +{ribilanciamento} net-dev"
+    testo += f", partecipazione {ft:g}"
     if decay != 1.0:
-        testo += f", lr ×{decay:g}"
+        testo += f", lr x{decay:g}"
     if n_round != 50:
         testo += f", {n_round} round"
     # compare solo per FedAdam
@@ -98,15 +111,14 @@ def macro_f1_selezionata(h: dict) -> float:
     return h["central_test_metrics"][str(h["run"]["selected_round"])]["macro_f1"]
 
 
-def configurazione_migliore(gruppi: dict[tuple, list[dict]]) -> tuple:
-    # la chiave viene scelta in base alla macro-f1 score selezionata più alta mediata sulle ripetizioni
+def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
+    # per sceglierla devo guardare la federazione vera (quella divisa per subnet e ribilanciamento)
 
-    # calcolo la media perchè ho due esecuzioni per strategia
-    return max( # restituisce la tupla con f1-score più alta
-        gruppi,
-        # key è il criterio con cui trovare il massimo
-        key=lambda k: float(np.mean([macro_f1_selezionata(h) for h in gruppi[k]])),
-    )
+    # di conseguenza le figure 3 e 4 mostrano solo cosa sbaglia il modello vero
+    reali = [k for k in gruppi if k[1] == "subnet" and k[2] == 0]
+    if not reali:
+        reali = list(gruppi)
+    return max(reali, key=lambda k: float(np.mean([macro_f1_selezionata(h) for h in gruppi[k]])))
 
 
 def _salva(fig, percorso: Path) -> None:
@@ -206,7 +218,7 @@ def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> Non
 # f1 delle tre classi round per round
 
 def figura_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
-    chiave = configurazione_migliore(gruppi)
+    chiave = configurazione_consegnata(gruppi)
     # mostro quella che ha prodotto il modello migliore (nel mio caso FedAvg) fra le ripetizioni senza media (ne scelgo 1 sola)
     h = max(gruppi[chiave], key=macro_f1_selezionata)
     c = h["central_test_metrics"]
@@ -231,7 +243,7 @@ def figura_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> No
 # matrice di confusione del modello selezionato dalla configurazione migliore (nel mio caso FedAvg) sul test del server
 
 def figura_confusione(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
-    chiave = configurazione_migliore(gruppi)
+    chiave = configurazione_consegnata(gruppi)
     h = max(gruppi[chiave], key=macro_f1_selezionata)
     voce = h["central_test_metrics"][str(h["run"]["selected_round"])]
     cm = np.array(voce["confusion"], dtype=float)

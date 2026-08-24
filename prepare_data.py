@@ -8,7 +8,22 @@
 
 # ogni client corrisponde ad una subnet istituzionale con almeno 10 indirizzi al suo interno
 
+# ogni esecuzione di questo script svuota /shards (tranne test set del server) e riscrive meta.json per indicare con quale modalità sono stati costruiti
+
+# Divisione dei dati
+#   --partition subnet : divisione di default del progetto
+#   --partition random : suddivisione casuale dei dati in blocchi uguali sullo stesso numero di client della divisione per subnet
+#   --partition random-sizes : indirizzi mescolati a caso con dimensioni delle subnet vere
+#   --rebalance-net-device N : porta ogni client ad almeno N net-device dando copie a chi ne ha meno;
+#       Nella divisione per subnet 27 client su 69 non ne hanno nemmeno uno e altri 26 ne hanno meno di dieci, quindi con N=10 ricevono in 53, 
+#       per un totale di 425 serie prestate.
+#       Come menzionato in esperimenti.sh e RISULTATI.md, questo argomento rilassa l'ipotesi di federated learning dato che alcune serie passano da un client 
+#       all'altro, e l'idea è la stessa di Zhao et al. 2018 in "Federated Learning with Non-IID Data"
+
+
 # lo script alla fine stampa il numero di options.num-supernodes da inserire in pyproject.toml
+
+# il test set del server non cambia
 
 from __future__ import annotations
 
@@ -63,14 +78,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--min-subnet-size",
         type=int,
         default=10,
-        help="Indirizzi etichettati minimi perché una subnet diventi un client. "
-        "Le subnet sotto soglia vengono scartate, non accorpate ad altre. "
-        "Alzarlo molto (per esempio a 5000) è anche il modo di ottenere una "
-        "federazione piccola per le prove.",
+        help="Indirizzi etichettati minimi perché una subnet diventi un client"
+    )
+
+    p.add_argument(
+        "--partition",
+        choices=("subnet", "random", "random-sizes"),
+        default="subnet",
+        help="Come dividere il pool fra i client"
+    )
+
+    p.add_argument(
+        "--rebalance-net-device",
+        type=int,
+        default=0, # default è spento
+        metavar="N",
+        help="Ogni client con meno di N net-device ne riceve copie dai client che ne hanno di più",
     )
 
     return p.parse_args(argv)
-
 
 # Le etichette non si trovano dentro le serie temporali ma all'interno di device_type_ip_address_full (annotazione a parte), che copre solo 
 # una parte di tutti gli indirizzi
@@ -214,7 +240,100 @@ def partition_by_group(group_ids: np.ndarray) -> list[np.ndarray]:
     return [np.sort(np.asarray(g, dtype=int)) for g in ordered]
 
 
-# carico le serie grezze a blocchi 
+# PARTIZIONE CASUALE
+# prende in input il num di client e num di indirizzi della partizione per subnet, che vengono divisi in blocchi uguali in base al num di client
+
+# la differenza con random-sizes è che li vengono mantenute le dimensioni vere delle subnet
+def partition_random(
+    n_addresses: int,
+    num_clients: int,
+    *,
+    seed: int,
+    dimensioni: list[int] | None = None,
+) -> list[np.ndarray]:
+    # mescolo le posizioni del pool e le taglio in num_clients pezzi
+    rng = np.random.default_rng(seed)
+    perm = rng.permutation(n_addresses)
+
+    if dimensioni is None:
+        # array_split accetta anche divisioni non esatte: 82.527 su 69 dà pezzi da 1204 e da 1205
+        pezzi = np.array_split(perm, num_clients)
+    else:
+        if sum(dimensioni) != n_addresses:
+            raise SystemExit(
+                f"Le dimensioni richieste sommano a {sum(dimensioni):,} invece di {n_addresses:,}."
+            )
+        # np.cumsum dice dove tagliare per ottenere esattamente quelle dimensioni
+        pezzi = np.split(perm, np.cumsum(dimensioni)[:-1])
+
+    # ordino gli indici dentro ogni client come fa partition_by_group, così gli shard hanno la stessa
+    # forma qualunque sia la modalità, e ordino i client dal più grande al più piccolo per lo stesso motivo
+    pezzi = sorted((np.sort(p) for p in pezzi), key=len, reverse=True)
+    return [p.astype(int) for p in pezzi]
+
+
+# RIBILANCIAMENTO DELLA CLASSE MINORITARIA
+# restituisce per ogni client la lista di indici dell'insieme di indirizzi che quel client riceve in prestito dagli altri
+
+# le righe in prestito vengono messe in coda allo shard al momento della scrittura e questo permette di tenerli fuori dalla validazione locale
+
+# i donatori di net-device sono quelli che si trovano al di sopra della soglia definita
+
+# la donazione avviene a giro per evitare di copiare sempre le stesse serie o di avere poche serie ripetute moltissime volte
+def rebalance_net_device(
+    parts: list[np.ndarray],
+    pool_y: np.ndarray,
+    minimo: int,
+    *,
+    seed: int,
+) -> list[np.ndarray]:
+    idx_net = cfg.CLASS_NAMES.index("net-device")
+
+    # quanti net-device ha ogni client e quali sono, indice per indice
+    net_di = [p[pool_y[p] == idx_net] for p in parts]
+    quanti = np.array([len(v) for v in net_di])
+
+    # chi può donare
+    donatori = [i for i in range(len(parts)) if quanti[i] > minimo]
+    if not donatori:
+        raise SystemExit(
+            f"Nessun client ha più di {minimo} net-device, quindi non c'è niente da cui copiare."
+        )
+
+    # metto in fila tutte le serie donabili, mescolate, e le distribuisco a giro
+    rng = np.random.default_rng(seed)
+    disponibili: list[int] = []
+    for i in donatori:
+        surplus = net_di[i][minimo:]  # i primi `minimo` restano al donatore
+        disponibili.extend(int(v) for v in surplus)
+    rng.shuffle(disponibili)
+
+    prestiti: list[np.ndarray] = []
+    posizione = 0
+    for i in range(len(parts)):
+        mancanti = max(0, minimo - int(quanti[i]))
+        presi: list[int] = []
+        for _ in range(mancanti):
+            # se la fila finisce si riparte da capo: le serie si ripetono, ma sparse su client diversi
+            presi.append(disponibili[posizione % len(disponibili)])
+            posizione += 1
+        prestiti.append(np.array(presi, dtype=int))
+
+    ricevuti = sum(len(p) for p in prestiti)
+    riceventi = sum(1 for p in prestiti if len(p) > 0)
+    log.info(
+        "Ribilanciamento a %d net-device: %d client ne ricevono %s copie in tutto "
+        "(il %.2f%% del pool), attingendo da %d donatori.",
+        minimo,
+        riceventi,
+        f"{ricevuti:,}",
+        100 * ricevuti / sum(len(p) for p in parts),
+        len(donatori),
+    )
+    return prestiti
+
+
+# carico le serie grezze a blocchi
 
 # faccio a blocchi perchè get_train_numpy carica tutto in memoria
 # le 83141 serie del pool sono 3,1 GB in float64, che diventano il doppio nel momento in cui le impila una sull'altra, e su 7,4 GB di RAM non ci stanno
@@ -266,6 +385,36 @@ def write_shard(path: Path, X: np.ndarray, y: np.ndarray, ts_ids: np.ndarray) ->
     )
 
 
+# pulisco la cartella prima di rigenerare gli shard
+# non cancello lo shard del server
+def clean_shard_dir() -> None:
+    vecchi = sorted(cfg.SHARD_ROOT.glob("client_*.npz"))
+    for percorso in vecchi:
+        percorso.unlink()
+    # anche i metadati, sennò descriverebbero una partizione che non esiste più
+    if cfg.meta_path().exists():
+        cfg.meta_path().unlink()
+    if vecchi:
+        log.info("Rimossi %d shard client della generazione precedente.", len(vecchi))
+
+
+# test set del server valido sse gli indirizzi scelti dall'holdout (seed) sono corretti controllando gli identificatori
+# (split diversi possono avere la stessa dimensione ma contenere cose diverse)
+def server_test_valido(test_ids: np.ndarray) -> bool:
+    percorso = cfg.server_shard_path()
+    if not percorso.exists():
+        return False
+    try:
+        with np.load(percorso) as data:
+            presenti = np.asarray(data["ts_ids"])
+    except Exception:
+        # file troncato o illeggibile: meglio riscriverlo
+        return False
+    return len(presenti) == len(test_ids) and bool(
+        np.array_equal(np.sort(presenti), np.sort(np.asarray(test_ids)))
+    )
+
+
 # Visualizzazione delle partizioni con informazioni sul contenuto (finisce dentro meta.json oltre che a essere mostrata sotto)
 def summarize_partition(parts: list[np.ndarray], y: np.ndarray) -> dict:
     sizes = np.array([len(p) for p in parts])
@@ -293,10 +442,18 @@ def summarize_partition(parts: list[np.ndarray], y: np.ndarray) -> dict:
         "per_client_class_counts": per_client.tolist(),
     }
 
-def print_summary(summary: dict) -> None:
+# descrizione in chiaro di ogni modalità, usata sia nel riepilogo stampato sia in meta.json
+DESCRIZIONE_PARTIZIONE = {
+    "subnet": "una subnet istituzionale per client",
+    "random": "indirizzi mescolati a caso, client di dimensione uguale",
+    "random-sizes": "indirizzi mescolati a caso, dimensioni delle subnet vere",
+}
+
+
+def print_summary(summary: dict, modalita: str) -> None:
     mb = summary["samples_max"] * cfg.SEQ_LEN * cfg.NUM_FEATURES * 4 / 1024**2
     n = summary["num_clients"]
-    print("\nPartizione fra i client (una subnet per client)")
+    print(f"\nPartizione fra i client ({DESCRIZIONE_PARTIZIONE[modalita]})")
     print(f"  client                     : {n}")
     print(f"  indirizzi distribuiti      : {summary['samples_total']:,}")
     print(
@@ -376,6 +533,12 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("Dataset in %s", cfg.DATA_ROOT)
     log.info("Shard in    %s", cfg.SHARD_ROOT)
+    log.info("Divisione   %s (%s)", args.partition, DESCRIZIONE_PARTIZIONE[args.partition])
+    if args.rebalance_net_device > 0:
+        log.info("Ribilanciamento net-device a %d per client", args.rebalance_net_device)
+
+    # shard precedenti cancellati mentre test set server resta
+    clean_shard_dir()
 
     ensure_dataset_complete(cfg.DATA_ROOT)
 
@@ -430,8 +593,43 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Subnet con almeno un indirizzo etichettato: %d", len(parts))
     parts = apply_min_subnet_size(parts, args.min_subnet_size)
 
+    # la divisione per subnet viene semre calcolata perchè le latre divisioni si basano su di essa (num client e num indirizzi)
+    if args.partition != "subnet":
+        # tengo solo gli indirizzi che sono sopravvissuti alla soglia, cioè gli stessi 82.527
+        indirizzi_del_pool = np.sort(np.concatenate(parts))
+        dimensioni = [len(p) for p in parts] if args.partition == "random-sizes" else None
+
+        posizioni = partition_random(
+            len(indirizzi_del_pool),
+            len(parts),
+            seed=cfg.RANDOM_STATE,
+            dimensioni=dimensioni,
+        )
+        # partition_random lavora su 0..n-1, quindi rimappo sulle posizioni vere dentro pool_ids
+        parts = [indirizzi_del_pool[p] for p in posizioni]
+        log.info(
+            "Divisione %s: %d client sugli stessi %s indirizzi della partizione per subnet",
+            args.partition,
+            len(parts),
+            f"{len(indirizzi_del_pool):,}",
+        )
+
     summary = summarize_partition(parts, pool_y)
-    print_summary(summary)
+    print_summary(summary, args.partition)
+
+    # prestiti[c] sono indici dell'insieme di indirizzi che il client c riceve da altri
+    if args.rebalance_net_device > 0:
+        prestiti = rebalance_net_device(
+            parts, pool_y, args.rebalance_net_device, seed=cfg.RANDOM_STATE
+        )
+    else:
+        prestiti = [np.array([], dtype=int) for _ in parts]
+
+    # righe_di[c] contiene prima gli indirizzi del client c poi le serie ricevute in prestito
+    righe_di = [
+        np.concatenate([parts[c], prestiti[c]]) if len(prestiti[c]) else parts[c]
+        for c in range(len(parts))
+    ]
 
     # scrittura degli shard a blocchi di client 
     t0 = time.time()
@@ -442,7 +640,8 @@ def main(argv: list[str] | None = None) -> int:
     def flush(batch: list[int]) -> int:
         if not batch:
             return 0
-        wanted = np.concatenate([pool_ids[parts[c]] for c in batch])
+        # np.unique perchè col ribilanciamento la stessa serie può servire a due client dello stesso blocco
+        wanted = np.unique(np.concatenate([pool_ids[righe_di[c]] for c in batch]))
         X, got_ids = load_raw_series(dataset, wanted, workers=WORKERS)
 
         # riallineo per identificatore
@@ -456,7 +655,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         for client_id in batch:
-            idx = parts[client_id]
+            idx = righe_di[client_id]
             rows = np.array([position[int(t)] for t in pool_ids[idx]])
             write_shard(
                 cfg.client_shard_path(client_id),
@@ -468,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
         return len(batch)
 
     for client_id in range(len(parts)):
-        n = len(parts[client_id])
+        n = len(righe_di[client_id])
         if batch and batch_size + n > CHUNK_SERIES:
             written += flush(batch)
             log.info("Shard scritti: %d/%d", written, len(parts))
@@ -478,23 +677,34 @@ def main(argv: list[str] | None = None) -> int:
     written += flush(batch)
     log.info("Shard scritti: %d/%d", written, len(parts))
 
-    # test set del server
-    log.info("Scrittura del test set del server (%s indirizzi)", f"{len(test_ids):,}")
-    X_test, got_ids = load_raw_series(dataset, test_ids, workers=WORKERS)
-    position = {int(t): i for i, t in enumerate(got_ids)}
-    rows = np.array([position[int(t)] for t in test_ids])
-    write_shard(cfg.server_shard_path(), X_test[rows], test_y, test_ids)
-    del X_test
+    # valido se test set del server è ancora valido altrimenti lo riscrivo
+    if server_test_valido(test_ids):
+        log.info(
+            "Test set del server già presente e con gli stessi %s indirizzi.",
+            f"{len(test_ids):,}",
+        )
+    else:
+        log.info("Scrittura del test set del server (%s indirizzi)", f"{len(test_ids):,}")
+        X_test, got_ids = load_raw_series(dataset, test_ids, workers=WORKERS)
+        position = {int(t): i for i, t in enumerate(got_ids)}
+        rows = np.array([position[int(t)] for t in test_ids])
+        write_shard(cfg.server_shard_path(), X_test[rows], test_y, test_ids)
+        del X_test
 
-       
-    # Scrittura dei metadati
-    # ServerApp e ClientApp li leggono per sapere quanti shard esistono e com'è fatta la partizione, altrimenti il controllo con il numero di 
-    # SuperNodes non potrebbe essere effettuato
+
+    # scrittura dei metadati
+    # ServerApp e ClientApp li leggono per sapere quanti shard esistono e com'è fatta la partizione, altrimenti il controllo con il numero di SuperNodes non potrebbe essere effettuato
     meta = {
         "num_partitions": len(parts),
-        "partition": "subnet",
+        # come sono stati divisi gli indirizzi; letto da ServerApp e grafici e finisce dentro file history
+        "partition": args.partition,
+        # la colonna delle subnet viene registrata a prescindere visto che anche nelle altre modalità il numero di client e colonna subnet derivano da qua
         "group_column": group_col,
         "min_subnet_size": args.min_subnet_size,
+        # quante copie di net-device ha ricevuto ogni client da cui ricavo quante righe dello shard sono davvero sue
+        "rebalance_net_device": int(args.rebalance_net_device),
+        "own_per_client": [int(len(p)) for p in parts],
+        "donated_per_client": [int(len(p)) for p in prestiti],
         "random_state": cfg.RANDOM_STATE,
         "class_names": list(cfg.CLASS_NAMES),
         "feature_names": list(cfg.FEATURE_NAMES),
@@ -517,6 +727,12 @@ def main(argv: list[str] | None = None) -> int:
         f"\nFatto in {elapsed/60:.1f} min. "
         f"{len(parts)} shard client più il test del server in {cfg.SHARD_ROOT}"
     )
+    print(f"Divisione: {args.partition} ({DESCRIZIONE_PARTIZIONE[args.partition]})")
+    if args.rebalance_net_device > 0:
+        print(
+            f"Ribilanciamento: {sum(len(p) for p in prestiti):,} net-device copiati "
+            f"per portare ogni client ad almeno {args.rebalance_net_device}"
+        )
     print(
         "Ricordati che options.num-supernodes in pyproject.toml deve valere "
         f"{len(parts)}."

@@ -31,7 +31,6 @@ from fedrnn.task import (
     evaluate,
     format_confusion,
     metrics_from_confusion,
-    parameter_summary,
     pick_device,
     unflatten_confusion,
 )
@@ -43,6 +42,9 @@ app = ServerApp()
 # chiavi con cui i client dichiarano quanti campioni hanno usato e con cui vengono pesate la media dei parametri e la media delle metriche scalari
 WEIGHT_KEY = "num-examples"
 CONFUSION_KEY = "confusion"
+
+# partizioni
+PARTIZIONI_AMMESSE = ("subnet", "random", "random-sizes")
 
 
 # Collegamento di tutti i nodi
@@ -325,17 +327,19 @@ def main(grid: Grid, context: Context) -> None:
     meta = load_meta()
     num_partitions = int(meta["num_partitions"])
 
-    
+
     # controllo che la run venga effettuata sui dati veri e non finti (errore di scrittura di partizione)
-    if meta.get("partition") != "subnet":
+    # le modalità casuali sono ammesse perchè usano gli stessi indirizzi veri mentre tutto il resto viene rifiutato
+    partizione = str(meta.get("partition"))
+    if partizione not in PARTIZIONI_AMMESSE:
         raise RuntimeError(
             f"Gli shard in {cfg.SHARD_ROOT} dichiarano partizione "
-            f"{meta.get('partition')!r} invece di 'subnet'. Questo progetto si "
+            f"{partizione!r}, che non è fra {PARTIZIONI_AMMESSE}. Questo progetto si "
             "addestra solo su dati veri: rigenerali con python prepare_data.py."
         )
+    # quante copie di net-device sono state distribuite ai client che non ne avevano (0 = nessuna)
+    ribilanciamento = int(meta.get("rebalance_net_device", 0) or 0)
 
-    log.info("=" * 78)
-    log.info("Classificazione federata del tipo di dispositivo — CESNET-TimeSeries24")
     log.info(
         "Partizione per %s su %d client (colonna %s)",
         meta["partition"],
@@ -347,9 +351,15 @@ def main(grid: Grid, context: Context) -> None:
         f"{meta['pool_size']:,}",
         f"{meta['server_test_size']:,}",
     )
+    
+    if ribilanciamento:
+        log.info(
+            "RIBILANCIAMENTO ATTIVO: ogni client ha almeno %d net-device, %s copie "
+            "distribuite fra i client (ipotesi di riservatezza rilassata)",
+            ribilanciamento,
+            f"{sum(meta.get('donated_per_client', [])):,}",
+        )
     log.info("Strategia: %s | round: %d", strategy_name, num_rounds)
-    log.info("Shard letti da %s", cfg.SHARD_ROOT)
-    log.info("=" * 78)
 
     
     # statistiche federate, una volta sola
@@ -372,37 +382,13 @@ def main(grid: Grid, context: Context) -> None:
         "feature-std": [float(v) for v in std],
         "class-weights": [float(v) for v in class_weights],
     }
-
-    
-    # il lr cala lungo i round e il calcolo viene eseguito dal client
-    if lr_decay != 1.0:
-        log.info(
-            "Learning rate da %.2e con decadimento %.3f per round: all'ultimo "
-            "round varrà %.2e",
-            lr,
-            lr_decay,
-            lr * lr_decay ** (num_rounds - 1),
-        )
-
     
     # modello iniziale
     global_model = DeviceRNN()
-    n_params, kbytes = parameter_summary(global_model)
-    n_train_nodes = max(2, int(num_partitions * fraction_train))
-    log.info(
-        "Modello: %s parametri, %.1f KB in float32. Traffico per round: circa "
-        "%.1f MB con %d client",
-        f"{n_params:,}",
-        kbytes,
-        2 * kbytes * n_train_nodes / 1024,
-        n_train_nodes,
-    )
     initial_arrays = ArrayRecord(global_model.state_dict())
 
     device = pick_device()
-    log.info("Dispositivo per la valutazione centralizzata: %s", device)
 
-    
     # dato che strategy.start salva le metriche solamente alla fine della run, per evitare che non vengano salvate causa problemi esterni,
     # uso dei dizionari per tenere traccia delle metriche round per round
     history_train: dict[str, dict] = {}
@@ -411,9 +397,11 @@ def main(grid: Grid, context: Context) -> None:
 
     cfg.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti e decadimento)
+    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti, decadimento, partizione, ribilanciamento)
     tag = (
-        f"{strategy_name}_ft{fraction_train:g}_lrd{lr_decay:g}"
+        f"{strategy_name}_{partizione}"
+        f"{f'-rb{ribilanciamento}' if ribilanciamento else ''}"
+        f"_ft{fraction_train:g}_lrd{lr_decay:g}"
         f"_{num_partitions}c_{num_rounds}r"
     )
     history_path = cfg.OUTPUT_ROOT / f"history_{tag}_{stamp}.json"
@@ -453,6 +441,7 @@ def main(grid: Grid, context: Context) -> None:
             "partition": {
                 "kind": meta["partition"],
                 "group_column": meta.get("group_column"),
+                "rebalance_net_device": ribilanciamento,
                 "summary": meta["partition_summary"],
             },
             "feature_mean": [float(v) for v in mean],
@@ -591,4 +580,3 @@ def main(grid: Grid, context: Context) -> None:
         "Riferimento: RNN centralizzata con pesi di classe, macro-F1 0.7615 "
         "sugli stessi 9.238 indirizzi"
     )
-    log.info("=" * 78)
