@@ -55,10 +55,6 @@ class DeviceRNN(nn.Module):
         output = output[:, -1]
         return self.fc(self.dropout(output))
 
-def parameter_summary(model: nn.Module) -> tuple[int, float]:
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return n_params, n_params * 4 / 1024
-
 
 # su quale dispositivo si allena
 def pick_device() -> torch.device:
