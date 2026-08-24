@@ -336,7 +336,7 @@ def rebalance_net_device(
 # carico le serie grezze a blocchi
 
 # faccio a blocchi perchè get_train_numpy carica tutto in memoria
-# le 83141 serie del pool sono 3,1 GB in float64, che diventano il doppio nel momento in cui le impila una sull'altra, e su 7,4 GB di RAM non ci stanno
+# le 83,141 serie del pool sono 3.1 GB in float64, che diventano il doppio nel momento in cui le impila una sull'altra, e su 7.4 GB di RAM non ci stanno
 def load_raw_series(
     dataset,
     ts_ids: np.ndarray,
