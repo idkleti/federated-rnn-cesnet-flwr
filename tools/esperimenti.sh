@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Questo file contiene le run mostrate in RISULTATI.md
-# Tempo totale di addestramento per la mia macchina: circa 28 ore
+# Tempo totale di addestramento per la mia macchina: 39 ore
 
 # Eseguibile con:
 #     source venv/bin/activate  # versione python3.12 preferibilmente
@@ -9,7 +9,7 @@
 # solo dopo aver scaricato il dataset ed eventualmente caricato le shard (python prepare_data.py)
 # NOTA: ad ogni esecuzione vengono aggiunti nuovi file in ../outputs/
 
-# Per evitare di dover lasciare in esecuzione per 28 ore, commentare i blocchi che non servono e lanciarne uno per volta
+# Per evitare di dover lasciare in esecuzione per 39 ore, commentare i blocchi che non servono e lanciarne uno per volta
 
 # Nel progetto le configurazioni vengono ripetute 25 volte poichè con solo un paio di esecuzioni non è possibile distinguere tra coincidenza e risultati veri
 
@@ -32,7 +32,6 @@ esegui() {
 # RUN EFFETTUATE in maniera "realistica" (dati divisi per subnet)
 python prepare_data.py
 
-
 # 1. il numero di client che partecipano viene modificato al 30%, 50% e 100%
 esegui "num-server-rounds=$R fraction-train=0.3 lr-decay=1.0 strategy=\"fedavg\""
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
@@ -45,16 +44,24 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\
 
 # 3. strategie alternative al punto 2 con stessa partecipazione del 50% e decadimento learning rate
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\""
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\""
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\"" # usa proxumal-mu=0.1 di default
 
 
 # 4. 100 round anzichè 50
 esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
 
+# 5. cambiamento del valore di proximal-mu di fedprox
+# QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA PER ULTIMA DOPO TUTTE LE ALTRE PROVE NEL FILE
+# proximal-mu pesa quanto un client viene penalizzato man mano che si allontana dai pesi che il server gli ha spedito
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=0.2"
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=0.5"
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=0.8"
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=1.0"
+
 
 # RUN SPERIMENTALI (dati divisi randomicamente, copia della classe minoritaria e mantenimento della grandezza dei client iniziali ma con dati casuali)
-# Una volta effettuati i primi 4 punti, la configurazione di addestramento migliore (fedavg, partecipazione 0.5, decadimento 0.97) viene fissata
-# e l'unica cosa che cambia è come vengono divisi i dati per vedere se si può guadagnare qualcosa e come l'eterogeneità dei client influisce sul modello
+# Una volta effettuati i primi 4 punti, la configurazione di addestramento migliore fra quelle provate fino a quel momento (fedavg, partecipazione 0.5, decadimento 0.97)
+# viene fissata e l'unica cosa che cambia è come vengono divisi i dati per vedere se si può guadagnare qualcosa e come l'eterogeneità dei client influisce sul modello
 
 # Il progetto è in grado di eseguire tutte le configurazioni reali e sperimentali, l'unica cosa da cambiare è come vengono creati gli shard
 
@@ -62,12 +69,12 @@ esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\
 
 # !! IL TEST SET DEL SERVER NON VIENE MODIFICATO E RIMANE SEMPRE LO STESSO AD OGNI ESECUZIONE 
 
-# 5. indirizzi mescolati a caso con dimensione dei client uguale
+# 6. indirizzi mescolati a caso con dimensione dei client uguale
 python prepare_data.py --partition random
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 
-# 6. copia della classe minoritaria (net-device) per rilassare ipotesi del federated learning
+# 7. copia della classe minoritaria (net-device) per rilassare ipotesi del federated learning
 
 # Questa idea è la stessa nel paper Zhao et al. 2018 "Federated Learning with Non-IID Data" dove
 # un insieme ristretto e condiviso (in questo caso di net-device) viene distribuito a tutti i partecipanti
@@ -81,7 +88,7 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\
 python prepare_data.py --rebalance-net-device 10
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
-# 7. indirizzi mescolati con dimensioni delle subnet reali
+# 8. indirizzi mescolati con dimensioni delle subnet reali
 python prepare_data.py --partition random-sizes
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 

@@ -58,8 +58,8 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
         if len(h["central_test_metrics"]) < n_round + 1:  # +1 per il round 0
             continue
 
-        # il passo del server di FedAdam fa parte della chiave altrimenti run con eta diverso verrebbero messe assieme
-        # per le altre strategie vale None
+        # il passo del server di FedAdam e il richiamo di FedProx fanno parte della chiave, altrimenti run con eta o con mu diverso verrebbero messe assieme.
+        # ciascuno vale None per le strategie che non lo usano
 
         # partizione e ribilanciamento vengono inserite nella chiave per dividere run con stessi iperparametri ma partizione/ribilanciamento diverso
         chiave = (
@@ -70,6 +70,7 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
             float(run.get("lr_decay", 1.0)),
             n_round,
             run.get("server_learning_rate"),
+            run.get("proximal_mu"),
         )
         gruppi[chiave].append(h)
     return gruppi
@@ -84,7 +85,7 @@ NOME_PARTIZIONE = {
 
 
 def etichetta(chiave: tuple) -> str:
-    strategia, partizione, ribilanciamento, ft, decay, n_round, server_lr = chiave
+    strategia, partizione, ribilanciamento, ft, decay, n_round, server_lr, mu = chiave
     testo = f"{strategia}, {NOME_PARTIZIONE.get(partizione, partizione)}"
     if ribilanciamento:
         testo += f" +{ribilanciamento} net-dev"
@@ -96,6 +97,9 @@ def etichetta(chiave: tuple) -> str:
     # compare solo per FedAdam
     if server_lr is not None and server_lr != 0.01:
         testo += f", eta {server_lr:g}"
+    # compare solo per FedProx
+    if mu is not None:
+        testo += f", mu {mu:g}"
     return testo
 
 

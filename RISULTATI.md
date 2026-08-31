@@ -1,8 +1,8 @@
 # RISULTATI DEGLI ESPERIMENTI
 Il file usa la convenzione numerica americana (1,234.56).
 
-Sono state effettuate **250 esecuzioni complete** su WSL2 (16 core, 7.4 GB di RAM, RTX 5060 con 8 GB), per un totale di circa 28 ore di solo addestramento.
-I comandi che le hanno prodotte stanno in [`tools/esperimenti.sh`](tools/esperimenti.sh), gli storici round per round in `outputs/history_*.json`, e le figure si rigenerano con `python tools/grafici.py`.
+Sono state effettuate **350 esecuzioni complete** su WSL2 (16 core, 7.4 GB di RAM, RTX 5060 con 8 GB), per un totale di circa 39 ore di solo addestramento.
+I comandi che le hanno prodotte si trovano in [`tools/esperimenti.sh`](tools/esperimenti.sh), gli storici round per round in `outputs/history_*.json`, e le figure si rigenerano con `python tools/grafici.py`.
 
 **Ogni configurazione è stata eseguita 25 volte.**
 
@@ -14,9 +14,7 @@ Il confronto viene effettuato sullo stesso test set poichè lo split avviene con
 
 Il modello inviato al server viene selezionato in base alla macro-f1 score migliore della run sui dati di validazione dei client, senza mai guardare il test. Si utilizza come metrica la macro-f1 score rispetto all'accuratezza poichè bisogna tenere conto dello sbilanciamento delle classi nel dataset.
 
-Il test set del server è lo stesso identico in tutte e quattro le partizioni confrontate più sotto. La
-divisione di holdout avviene prima di distribuire gli indirizzi ai client, quindi non dipende da come poi
-vengono divisi, e `prepare_data.py` se lo ritrova già scritto per poi riconoscerlo dagli identificatori e tenerselo.
+Il test set del server è lo stesso identico in tutte e quattro le partizioni confrontate più sotto. La divisione di holdout avviene prima di distribuire gli indirizzi ai client, quindi non dipende da come poi vengono divisi, e `prepare_data.py` se lo ritrova già scritto per poi riconoscerlo dagli identificatori e tenerselo.
 
 ## La federazione
 
@@ -39,6 +37,7 @@ I risultati sono raggruppati in una tabella che indica (in ordine):
 * **strategia**: strategia di aggregazione utilizzata
 * **ft**: frazione di client che partecipa a ogni round
 * **lrd**: fattore di decadimento del learning rate
+* **mu**: forza del richiamo verso il modello globale, solo per FedProx
 * **round**: numero di round effettuati nell'addestramento
 * **consegnato**: macro-f1 sul test del modello selezionato
 * **stab.**: quanto oscilla la macro-f1 negli ultimi 31 round
@@ -46,16 +45,20 @@ I risultati sono raggruppati in una tabella che indica (in ordine):
 
 In tutti gli esperimenti si hanno 2 epoche locali, Adam a 6.92e-4, weight decay 0.01, batch 64.
 
-| strategia | ft | lrd | round | consegnato | stab. | net-dev sotto 0.01 |
-|---|---|---|---|---|---|---|
-| **fedavg** | 0.5 | 0.97 | 50 | **0.6101**  | 0.0575 | 13/31 |
-| fedprox | 0.5 | 0.97 | 50 | 0.6035  | 0.0501 | 11/31 |
-| fedavg | 0.5 | — | 100 | 0.5983  | 0.0570 | 14/31 |
-| fedavg | 0.3 | — | 50 | 0.5911  | 0.0789 | 14/31 |
-| fedavg | 0.5 | — | 50 | 0.5910  | 0.0577 | 12/31 |
-| fedadam | 0.5 | 0.97 | 50 | 0.5856 | 0.0587 | 9/31 |
-| fedavg | 1.0 | — | 50 | 0.5249 | **0.0175** | **2/31** |
-| *centralizzata* | | | | *0.7615* | | |
+| strategia | ft | lrd | mu | round | consegnato | stab. | net-dev sotto 0.01 |
+|---|---|---|---|---|---|---|---|
+| **fedprox** | 0.5 | 0.97 | **0.8** | 50 | **0.6310** | 0.0566 | 5/31 |
+| fedprox | 0.5 | 0.97 | 1.0 | 50 | 0.6263 | 0.0504 | 2/31 |
+| fedprox | 0.5 | 0.97 | 0.5 | 50 | 0.6214 | 0.0549 | 5/31 |
+| fedprox | 0.5 | 0.97 | 0.2 | 50 | 0.6212 | 0.0538 | 9/31 |
+| fedavg | 0.5 | 0.97 | — | 50 | 0.6101 | 0.0575 | 13/31 |
+| fedprox | 0.5 | 0.97 | 0.1 | 50 | 0.6035 | 0.0501 | 11/31 |
+| fedavg | 0.5 | — | — | 100 | 0.5983 | 0.0570 | 14/31 |
+| fedavg | 0.3 | — | — | 50 | 0.5911 | 0.0789 | 14/31 |
+| fedavg | 0.5 | — | — | 50 | 0.5910 | 0.0577 | 12/31 |
+| fedadam | 0.5 | 0.97 | — | 50 | 0.5856 | 0.0587 | 9/31 |
+| fedavg | 1.0 | — | — | 50 | 0.5249 | **0.0175** | **2/31** |
+| *centralizzata* | | | | | *0.7615* | | |
 
 ![confronto fra le configurazioni](outputs/figure/02_confronto_strategie.png)
 
@@ -68,10 +71,12 @@ A parità di partecipazione e decadimento, le tre strategie stanno in poco più 
 | | consegnato | dev std |
 |---|---|---|
 | fedavg | 0.6101 | ± 0.0299 |
-| fedprox | 0.6035 | ± 0.0421 |
+| fedprox (mu=0.1) | 0.6035 | ± 0.0421 |
 | fedadam | 0.5856 | ± 0.0417 |
 
-FedAvg e FedProx sono praticamente indistinguibili. FedAvg viene scelto per la deviazione standard minore, cioè perchè si ripete più uguale a sé stesso.
+FedAvg e FedProx sono indistinguibili, e fra i due FedAvg ha la deviazione standard minore quindi è meno imprevedibile.
+
+Alzando `proximal-mu`, FedProx si stacca da FedAvg (vedi sezione *Il richiamo di FedProx verso il modello globale*).
 
 
 ## Il decadimento del learning rate aiuta
@@ -98,7 +103,8 @@ Con la partecipazione totale invece il calo vale 0.066 nonostante sia la configu
 
 ## Quanto conta la forma della federazione
 
-In questa sezione, la configurazione utilizzata è **FedAvg, fraction-train = 0.5, lr-decay 0.97 e 50 round**, l'unica cosa che cambia è la divisione degli indirizzi fra i client.
+In questa sezione, la configurazione utilizzata è **FedAvg, fraction-train = 0.5, lr-decay 0.97 e 50 round** e l'unica cosa che cambia è la divisione degli indirizzi fra i client poichè era la migliore fra quelle provate fino a quel punto.
+La prova su `proximal-mu` è stata fatta dopo che questi confronti erano già chiusi.
 Gli indirizzi sono sempre 82,527 e i client sempre 69.
 
 | | consegnato | min-max | divario |
@@ -118,7 +124,7 @@ Un paio di note sulla suddivisione casuale (usano gli stessi indirizzi e numero 
 | client con almeno un net-device | 42 su 69 | 69 su 69 | 43 su 69 |
 | net-device di chi ne ha di più | 55.7% | 2.1% | 19.2% |
 
-Guardando la seconda riga si può notare come, mantenendo le dimensioni vere ma mescolando i dati, **il fatto che metà federazione non abbia nemmeno un net-device dipende da quanto sono piccoli quei client e non da come sono fatte le subnet**.
+Guardando la seconda riga si può notare come, mantenendo le dimensioni vere ma mescolando i dati, **il fatto che quattro client su dieci non abbiano nemmeno un net-device dipende da quanto sono piccoli quei client e non da come sono fatte le subnet**.
 
 La concentrazione del 55.7% invece crolla al 19.2%.
 
@@ -135,7 +141,7 @@ La prima divisione dei dati migliora il risultato mentre la seconda divisione pe
 
 La spiegazione plausibile è che con pochi client grossi la media pesata di FedAvg sia dominata da aggiornamenti calcolati su molti dati, mentre 34 client da 1,200 indirizzi producono 34 aggiornamenti rumorosi da mediare fra loro.
 
-Quindi dei **0.1514** di divario rispetto al modello centralizzato:
+Quindi dei **0.1514** di divario rispetto al modello centralizzato, che è quello di FedAvg fissato in questa sezione:
 * **circa il 44% (0.0666)** dipende da come le classi sono distribuite fra le subnet
 * il restante **56% (0.0848)** è il costo di federare in sé, che resta anche con la partizione migliore
 
@@ -155,25 +161,51 @@ Alcune note sulla prova:
 * i donatori restano sempre sopra la soglia, quindi nessuno viene impoverito per arricchire un altro
 * le righe prestate stanno in coda allo shard e **non entrano mai nella validazione locale**. Se ci entrassero, il modello verrebbe valutato su una serie già vista in addestramento a casa di un altro client, e siccome sono tutte net-device il punteggio salirebbe proprio sulla classe che l'esperimento vuole misurare
 
+## Il richiamo di FedProx verso il modello globale
+
+Questa prova è stata effettuata dopo tutte quelle precedenti per cercare di migliorare ulteriormente la F1 del modello, cambiando il valore di `proximal-mu`.
+
+Il parametro pesa quanto un client viene penalizzato man mano che i suoi pesi si allontanano da quelli che il server gli ha spedito a inizio round. A 0 FedProx si comporta come FedAvg, e più sale meno i client possono allontanarsi dal modello globale durante le due epoche locali.
+
+| mu | consegnato | stab. | net-dev sotto 0.01 |
+|---|---|---|---|
+| 0.1 | 0.6035 ± 0.0421 | 0.0501 | 11/31 |
+| 0.2 | 0.6212 ± 0.0428 | 0.0538 | 9/31 |
+| 0.5 | 0.6214 ± 0.0300 | 0.0549 | 5/31 |
+| **0.8** | **0.6310 ± 0.0215** | 0.0566 | 5/31 |
+| 1.0 | 0.6263 ± 0.0254 | 0.0504 | 2/31 |
+
+A mu 0.8 il modello consegnato fa **0.6310** e porta il divario col centralizzato da 0.1514 a **0.1305**, con 2.83 volte l'errore di vantaggio su FedAvg. Tuttavia, qualsiasi mu da 0.2 in su va bene infatti fra 0.8 e 1.0 ci sono 0.70 volte l'errore, e 0.2 e 0.5 contro 0.1 stanno a 1.47 e 1.73.
+
+Il guadagno cade quasi tutto su una classe sola:
+
+| classe | fedavg | fedprox mu 0.8 | differenza |
+|---|---|---|---|
+| end-device | 0.9423 | 0.9446 | +0.0023 |
+| net-device | 0.4969 | 0.4881 | −0.0088 |
+| **server** | **0.3911** | **0.4601** | **+0.0689** |
+
+Sono i `server`, cioè la classe che porta da sola la fetta più grossa del divario e che il prestito di net-device della sezione precedente non era riuscito a smuovere. I round in cui la F1 dei net-device è praticamente zero passano da 13 su 31 a 5.
+
 ## Dove si perde il divario, classe per classe
 
 F1 per classe:
 
-| classe | centralizzata | subnet | + net-device | dimensioni reali |
-|---|---|---|---|---|
-| end-device | 0.9642 | 0.9423 | 0.9430 | 0.9449 |
-| net-device | 0.6304 | 0.4969 | 0.4976 | **0.5851** |
-| server | 0.6900 | 0.3911 | 0.4016 | **0.5000** |
+| classe | centralizzata | subnet (fedavg) | subnet (fedprox mu 0.8) | + net-device | dimensioni reali |
+|---|---|---|---|---|---|
+| end-device | 0.9642 | 0.9423 | 0.9446 | 0.9430 | 0.9449 |
+| net-device | 0.6304 | 0.4969 | 0.4881 | 0.4976 | **0.5851** |
+| server | 0.6900 | 0.3911 | **0.4601** | 0.4016 | **0.5000** |
 
-Sulla federazione vera il divario si distribuisce così:
+Sulla federazione vera, con la configurazione consegnata (fedprox mu 0.8), il divario si distribuisce così:
 
 | classe | perdita | quota del divario |
 |---|---|---|
-| end-device | 0.0219 | 5% |
-| net-device | 0.1335 | 29% |
-| **server** | **0.2989** | **66%** |
+| end-device | 0.0196 | 5% |
+| net-device | 0.1423 | 36% |
+| **server** | **0.2299** | **59%** |
 
-Due terzi del divario vengono dalla classe `server`, che passa da 0.3911 a 0.4016 aggiungendo i net-device, ma diventa 0.5000 sparpagliando tutte le classi. La classe dei `net-device`, quella che all'apparenza sembrava il problema, era la **classe sbagliata da prestare** poiché i server sono schiacciati da migliaia di end-device all'interno di ciascun client (nonostante i server siano presenti in 61 client di 69) e il peso di classe 3.64 non basta a farli notare.
+La classe dei `net-device`, quella che all'apparenza sembrava il problema, era la **classe sbagliata da prestare** poiché i server sono schiacciati da migliaia di end-device all'interno di ciascun client (nonostante i server siano presenti in 61 client di 69) e il peso di classe 3.64 non basta a farli notare.
 
 | classe | client che ne possiedono | quota del client più ricco |
 |---|---|---|
@@ -185,19 +217,19 @@ Due terzi del divario vengono dalla classe `server`, che passa da 0.3911 a 0.401
 
 ![matrice di confusione](outputs/figure/04_matrice_confusione.png)
 
-La matrice di confusione della federazione vera, mediata sulle 25 esecuzioni:
+La matrice di confusione della federazione vera con la configurazione consegnata (fedprox mu 0.8), mediata sulle 25 esecuzioni:
 
 | reale \ predetto | end-device | net-device | server |
 |---|---|---|---|
-| end-device (8,136) | 7,676 | 97 | 363 |
-| net-device (218) | 27 | **148** | 42 |
-| server (884) | **446** | 124 | 313 |
+| end-device (8,136) | 7,689 | 70 | 377 |
+| net-device (218) | 30 | **120** | 67 |
+| server (884) | **418** | 76 | **390** |
 
-Su 884 server veri, **446 finiscono fra gli end-device** e solo 313 vengono riconosciuti. I net-device invece se la cavano meglio di quanto ci si aspettasse.
+Su 884 server veri, **418 finiscono fra gli end-device** e 390 vengono riconosciuti. 
 
 ![F1 per classe](outputs/figure/03_f1_per_classe.png)
 
-La F1 degli end-device sale nei primi round e poi resta piatta sopra 0.93. Quella dei net-device oscilla in base alla partecipazione del client 5, che contiene 1,021 dei 1,832 net-device totali; il client 0 invece ha 17,398 indirizzi e appena 6 net-device, e siccome FedAvg pesa per numero di campioni vale da solo più del triplo del client 5. Nei round in cui il client 5 non partecipa, la media cancella quello che aveva insegnato.
+Con la configurazione consegnata la F1 degli end-device sale piano lungo tutti e cinquanta i round, da 0.91 a 0.95, senza mai assestarsi, e quella dei server fa lo stesso percorso da 0.38 a 0.47. I net-device invece oscillano in base alla partecipazione del client 5, che da solo contiene 1,021 dei 1,832 net-device della federazione; il client 0 ha 17,398 indirizzi e appena 6 net-device, e siccome l'aggregazione pesa per numero di campioni vale più del triplo del client 5. Nei round in cui il client 5 non partecipa, la media cancella quello che aveva insegnato.
 
 ## Perchè non si divide per istituzione
 
@@ -221,25 +253,25 @@ Forzare i 69 client spezzando le istituzioni fra più client è stato scartato p
 Gli shard vengono sovrascritti a ogni rigenerazione, quindi in `shards/` c'è sempre e solo l'ultima partizione usata. Perchè un risultato di due settimane fa resti interpretabile, la modalità viene registrata in tre punti:
 
 1. in `shards/meta.json`, nei campi `partition` e `rebalance_net_device`
-2. nel nome del file di storico, per esempio `history_fedavg_random_ft0.5_lrd0.97_69c_50r_*.json`
+2. nel nome del file di storico, per esempio `history_fedavg_random_ft0.5_lrd0.97_69c_50r_*.json`, con `_mu0.8` in più quando la strategia è FedProx
 3. dentro ogni storico, nel blocco `partition`
 
-`tools/grafici.py` usa partizione e ribilanciamento come parte della chiave con cui raggruppa le run, così configurazioni diverse non finiscono mai mediate insieme.
+`tools/grafici.py` usa partizione, ribilanciamento, passo del server di FedAdam e `proximal-mu` di FedProx come parte della chiave con cui raggruppa le run, così configurazioni diverse non finiscono mai mediate insieme.
 
 ## Conclusione
 
 | | macro-F1 |
 |---|---|
 | RNN centralizzata baseline | 0.7615 |
-| RNN federata, migliore configurazione | **0.6101** |
-| divario | **0.151** |
+| RNN federata, migliore configurazione | **0.6310** |
 
-La configurazione migliore è **FedAvg, metà dei client per round, decadimento 0.97, cinquanta round**.
+La configurazione migliore è **FedProx con proximal-mu 0.8, metà dei client per round, decadimento 0.97, cinquanta round**.
 
-Il costo del federated learning su questo problema è di **0.151** sulla macro-f1, e si distribuisce due terzi sui `server`, poco meno di un terzo sui `net-device` e quasi niente sugli end-device.
+Il costo del federated learning su questo problema è di **0.1305** sulla macro-f1, e si distribuisce quasi sei decimi sui `server`, poco più di un terzo sui `net-device` e quasi niente sugli end-device.
 
 Conclusioni elencate:
 
 1. **Il divario dipende da come le classi sono distribuite, non da quanto sono grandi i client.** Sparpagliando le classi si recupera il 44% del divario; pareggiando anche le dimensioni si peggiora.
 2. **I pesi di classe non bastano, ma nemmeno aggiungere dati della classe rara.** Il peso 15 assegnato ai net-device funziona dentro un client che i net-device ce li ha, e portarli a dieci in tutti i client non cambia niente. Il problema non è quanti ne ha ciascun client, è che dentro ogni client le proporzioni fra le classi non somigliano a quelle globali.
-3. **La federazione reale è imprevedibile, non solo peggiore.** Consegna fra 0.52 e 0.65 a seconda della run, contro un intervallo di due centesimi con i dati mescolati.
+3. **La federazione reale è imprevedibile, non solo peggiore.** FedAvg consegna fra 0.52 e 0.65 a seconda della run, contro un intervallo di due centesimi con i dati mescolati. Con FedProx e mu=0.8 invece l'intervallo si stringe a 0.59-0.66 e la deviazione standard scende da 0.0299 a 0.0215.
+4. **Trattenere i client vicino al modello globale è la strategia più efficace fra quelle provate.** Portare `proximal-mu` da 0.1 a 0.8 vale +0.0275 sul consegnato e sposta i `server` di quasi sette centesimi, che è la classe su cui nessun altro intervento aveva ottenuto niente. È anche la prova arrivata per ultima, dopo che tutto il resto era già stato misurato.

@@ -397,11 +397,12 @@ def main(grid: Grid, context: Context) -> None:
 
     cfg.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti, decadimento, partizione, ribilanciamento)
+    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti, decadimento, partizione, ribilanciamento, mu di FedProx)
     tag = (
         f"{strategy_name}_{partizione}"
         f"{f'-rb{ribilanciamento}' if ribilanciamento else ''}"
         f"_ft{fraction_train:g}_lrd{lr_decay:g}"
+        f"{f'_mu{proximal_mu:g}' if strategy_name == 'fedprox' else ''}"
         f"_{num_partitions}c_{num_rounds}r"
     )
     history_path = cfg.OUTPUT_ROOT / f"history_{tag}_{stamp}.json"
