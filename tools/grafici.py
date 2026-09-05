@@ -309,6 +309,57 @@ def figura_partizione(meta: dict, destinazione: Path) -> None:
     _salva(fig, destinazione / "05_partizione.png")
 
 
+def figura_heatmap_label_skew(summary: dict, destinazione: Path) -> None:
+    """Show each client's class proportions alongside its local sample count."""
+    class_counts = np.asarray(summary["per_client_class_counts"], dtype=float)
+    client_sizes = class_counts.sum(axis=1)
+    order = np.argsort(-client_sizes)
+    class_proportions = class_counts[order] / client_sizes[order, None]
+    global_proportions = class_counts.sum(axis=0) / class_counts.sum()
+
+    # Add the global distribution as a visual reference below all local clients.
+    heatmap_data = np.vstack([class_proportions, global_proportions])
+    n_clients = len(client_sizes)
+    y = np.arange(n_clients)
+
+    fig, (ax_size, ax_heatmap) = plt.subplots(
+        1,
+        2,
+        figsize=(7.1, 7.2),
+        gridspec_kw={"width_ratios": [1.35, 3.0], "wspace": 0.06},
+        sharey=True,
+    )
+
+    ax_size.barh(y, client_sizes[order], color="#7F7F7F", height=0.82)
+    ax_size.set_xscale("log")
+    ax_size.invert_yaxis()
+    ax_size.set_xlabel("samples\n(log scale)")
+    ax_size.set_ylabel("client rank by sample count")
+    ax_size.set_yticks([0, n_clients // 2, n_clients - 1])
+    ax_size.set_yticklabels(["1", str(n_clients // 2 + 1), str(n_clients)])
+    ax_size.grid(alpha=0.25, axis="x")
+
+    image = ax_heatmap.imshow(
+        heatmap_data,
+        aspect="auto",
+        interpolation="nearest",
+        cmap="YlOrRd",
+        vmin=0,
+        vmax=1,
+    )
+    ax_heatmap.axhline(n_clients - 0.5, color="black", linewidth=0.8)
+    ax_heatmap.set_xticks(range(cfg.NUM_CLASSES), cfg.CLASS_NAMES, rotation=25, ha="right")
+    ax_heatmap.set_yticks([0, n_clients // 2, n_clients - 1, n_clients])
+    ax_heatmap.set_yticklabels(["1", str(n_clients // 2 + 1), str(n_clients), "global"])
+    ax_heatmap.tick_params(axis="y", length=0)
+    ax_heatmap.set_title("local class proportion")
+
+    colorbar = fig.colorbar(image, ax=ax_heatmap, fraction=0.05, pad=0.03)
+    colorbar.set_label("class proportion")
+    fig.suptitle("Natural client partition: size and label composition", y=0.98)
+    _salva(fig, destinazione / "06_label_skew_heatmap.png")
+
+
 def main() -> int:
     gruppi = carica_storici(cfg.OUTPUT_ROOT)
     destinazione = cfg.OUTPUT_ROOT / "figure"
@@ -325,6 +376,16 @@ def main() -> int:
     figura_confronto(gruppi, destinazione)
     figura_per_classe(gruppi, destinazione)
     figura_confusione(gruppi, destinazione)
+
+    # The selected configuration always supplies the partition statistics,
+    # unlike shards/meta.json, which may not be present after cleanup.
+    selected_key = configurazione_consegnata(gruppi)
+    selected_history = max(gruppi[selected_key], key=macro_f1_selezionata)
+    summary = selected_history.get("partition", {}).get("summary")
+    if summary:
+        figura_heatmap_label_skew(summary, destinazione)
+    else:
+        print("  nessun riepilogo della partizione: salto la heatmap label skew")
 
     percorso_meta = cfg.meta_path()
     if percorso_meta.exists():
