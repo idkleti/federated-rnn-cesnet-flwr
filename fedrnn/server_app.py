@@ -21,7 +21,7 @@ from flwr.app import (
 )
 
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAdam, FedAvg, FedProx, Strategy
+from flwr.serverapp.strategy import FedAdam, FedAvg, FedProx, FedYogi, Strategy
 
 from fedrnn import config as cfg
 from fedrnn.data import build_server_test_loader, load_meta, statistics_to_mean_std
@@ -118,10 +118,13 @@ def build_strategy(
     if chiave == "fedadam":
         # eta è il passo del server
         return FedAdam(**comuni, eta=server_learning_rate)
+    if chiave == "fedyogi":
+        # come FedAdam, ma il passo del server non può crescere di colpo e non reagisce tanto alle run anomale
+        return FedYogi(**comuni, eta=server_learning_rate)
 
     raise ValueError(
         f"Strategia {name!r} non riconosciuta. Valori ammessi: "
-        "fedavg, fedprox, fedadam."
+        "fedavg, fedprox, fedadam, fedyogi."
     )
 
 # Round di statistiche
@@ -339,6 +342,7 @@ def main(grid: Grid, context: Context) -> None:
         )
     # quante copie di net-device sono state distribuite ai client che non ne avevano (0 = nessuna)
     ribilanciamento = int(meta.get("rebalance_net_device", 0) or 0)
+    mini_dataset = int(meta.get("mini_dataset", 0) or 0)
 
     log.info(
         "Partizione per %s su %d client (colonna %s)",
@@ -397,10 +401,11 @@ def main(grid: Grid, context: Context) -> None:
 
     cfg.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti, decadimento, partizione, ribilanciamento, mu di FedProx)
+    # il nome contiene tutti i dati per distinguere le run (strategia, frazione di partecipanti, decadimento, partizione, ribilanciamento, mini-dataset, mu di FedProx)
     tag = (
         f"{strategy_name}_{partizione}"
         f"{f'-rb{ribilanciamento}' if ribilanciamento else ''}"
+        f"{f'-md{mini_dataset}' if mini_dataset else ''}"
         f"_ft{fraction_train:g}_lrd{lr_decay:g}"
         f"{f'_mu{proximal_mu:g}' if strategy_name == 'fedprox' else ''}"
         f"_{num_partitions}c_{num_rounds}r"
@@ -421,7 +426,7 @@ def main(grid: Grid, context: Context) -> None:
                 "strategy": strategy_name,
                 "lr_decay": lr_decay,
                 "server_learning_rate": (
-                    server_lr if strategy_name == "fedadam" else None
+                    server_lr if strategy_name in ("fedadam", "fedyogi") else None
                 ),
                 "proximal_mu": proximal_mu if strategy_name == "fedprox" else None,
                 "num_rounds": num_rounds,
@@ -443,6 +448,7 @@ def main(grid: Grid, context: Context) -> None:
                 "kind": meta["partition"],
                 "group_column": meta.get("group_column"),
                 "rebalance_net_device": ribilanciamento,
+                "mini_dataset": mini_dataset,
                 "summary": meta["partition_summary"],
             },
             "feature_mean": [float(v) for v in mean],

@@ -6,7 +6,7 @@ dataset [CESNET-TimeSeries24](https://www.nature.com/articles/s41597-025-04603-x
 
 ## Cosa fa
 Ciascun indirizzo IP della rete produce una serie temporale.
-Per 280 giorni si registrano 18 features del suo traffico: pacchetti, byte, destinazioni contattate, rapporto TCP/UDP e durata media delle connessioni. 
+Per 280 giorni si registrano 18 features del suo traffico: pacchetti, byte, destinazioni contattate, rapporto TCP/UDP e durata media delle connessioni.
 Da questo comportamento, il modello indovina se l'indirizzo appartiene a un **end-device** (computer, telefoni), a un **server** o a un **net-device** (router, firewall).
 
 Ogni subnet istituzionale è un client che si addestra sui propri dati e invia verso l'esterno solo i pesi della rete neurale locale.
@@ -53,6 +53,7 @@ Il modo in cui gli indirizzi vengono divisi fra i client si sceglie invece in `p
 python prepare_data.py --partition random          # indirizzi mescolati, client uguali
 python prepare_data.py --partition random-sizes    # mescolati, dimensioni delle subnet vere
 python prepare_data.py --rebalance-net-device 10   # copie della classe rara a chi non ne ha
+python prepare_data.py --mini-dataset 500          # stesso insieme bilanciato dato a tutti i client
 ```
 
 Servono a misurare quanto del divario dipende dalla forma della federazione (vedi **[RISULTATI.md](RISULTATI.md)**).
@@ -86,13 +87,15 @@ outputs/               storici delle run e figure
 
 ## Risultati
 
-All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano **350 esecuzioni complete, 25 per ogni configurazione**, con il confronto tra strategie di aggregazione, quattro modi diversi di dividere gli indirizzi fra i client, e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
+All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano **400 esecuzioni complete, 25 per ogni configurazione**, con il confronto tra strategie di aggregazione, cinque modi diversi di dividere gli indirizzi fra i client, e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
 
 **In breve, la configurazione migliore è FedProx con proximal-mu = 0.8, fraction-train = 0.5 e lr-decay = 0.97**, con f1-score 0.6310 contro lo 0.7615 del centralizzato. Il divario è dovuto per quasi tre quinti alla classe **server** e per poco più di un terzo ai **net-device**. La differenza fra `fraction-train` 0.3 e 0.5 non esiste e il decadimento del learning rate aiuta invece di peggiorare.
 
-La prova su `proximal-mu` è stata effettuata per ultima, dopo tutte le prove precedenti, per utilizzare una strategia dedicata ai dati non-IID, cambiando il valore di mu. Portarlo a 0.8 sposta di sette centesimi la F1 dei `server`.
+La prova su `proximal-mu` è stata effettuata dopo le prime 250 esecuzioni, per utilizzare una strategia dedicata ai dati non-IID, cambiando il valore di mu. Portarlo da 0.1 a 0.8 sposta di quattro centesimi la F1 dei `server`.
 
-**Il risultato principale** è che il divario dipende da **come le classi sono distribuite fra i client**, e non da quanto i client sono grandi. Mescolando gli indirizzi fra i 69 client ma tenendo le dimensioni vere delle subnet si recupera il 44% del divario; se invece si rendono i client tutti della stessa dimensione il risultato peggiora.
+**Il risultato principale** è che il divario dipende da **come le classi sono distribuite fra i client**, e non da quanto i client sono grandi. Mescolando gli indirizzi fra i 69 client ma tenendo le dimensioni vere delle subnet si recupera il 44% del divario di FedAvg; se invece si rendono i client tutti della stessa dimensione il risultato peggiora.
 
 Da qua si deriva il perchè i `server` sono la classe più penalizzata pur essendo presenti in 61 client su 69, ovvero che non conta in quanti client una classe compare ma in che proporzione compare dentro ciascuno.
-Aggiungere qualche net-device ai client che ne hanno pochi non basta (provato con 425 serie), perchè lascia intatte le proporzioni fra le classi dentro ogni client. L'unico intervento che ha spostato davvero i `server` è stato trattenere i client vicino al modello globale durante le epoche locali, cioè alzare `proximal-mu`.
+
+Dalle run eseguite si nota che prestare i dati non aiuta, infatti aggiungere qualche net-device a chi ne ha pochi o dare a tutti lo stesso insieme bilanciato di 500 serie per classe non migliora il risultato poichè vengono schiacciati i pesi di classe e l'addestramento viene spostato verso proporzioni che il test set non ha.
+L'unico intervento che ha spostato davvero i `server` è stato trattenere i client vicino al modello globale durante le epoche locali (ovvero alzare `proximal-mu`).

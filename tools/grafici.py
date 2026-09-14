@@ -61,11 +61,12 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
         # il passo del server di FedAdam e il richiamo di FedProx fanno parte della chiave, altrimenti run con eta o con mu diverso verrebbero messe assieme.
         # ciascuno vale None per le strategie che non lo usano
 
-        # partizione e ribilanciamento vengono inserite nella chiave per dividere run con stessi iperparametri ma partizione/ribilanciamento diverso
+        # partizione, ribilanciamento e mini-dataset vengono inseriti nella chiave per dividere run con stessi iperparametri ma dati distribuiti in modo diverso
         chiave = (
             run.get("strategy", "fedavg"),
             part["kind"],
             int(part.get("rebalance_net_device", 0) or 0),
+            int(part.get("mini_dataset", 0) or 0),
             float(run["fraction_train"]),
             float(run.get("lr_decay", 1.0)),
             n_round,
@@ -85,10 +86,12 @@ NOME_PARTIZIONE = {
 
 
 def etichetta(chiave: tuple) -> str:
-    strategia, partizione, ribilanciamento, ft, decay, n_round, server_lr, mu = chiave
+    strategia, partizione, ribilanciamento, mini_dataset, ft, decay, n_round, server_lr, mu = chiave
     testo = f"{strategia}, {NOME_PARTIZIONE.get(partizione, partizione)}"
     if ribilanciamento:
         testo += f" +{ribilanciamento} net-dev"
+    if mini_dataset:
+        testo += f" +mini-dataset {mini_dataset}/classe"
     testo += f", partecipazione {ft:g}"
     if decay != 1.0:
         testo += f", lr x{decay:g}"
@@ -119,7 +122,9 @@ def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
     # per sceglierla devo guardare la federazione vera (quella divisa per subnet e ribilanciamento)
 
     # di conseguenza le figure 3 e 4 mostrano solo cosa sbaglia il modello vero
-    reali = [k for k in gruppi if k[1] == "subnet" and k[2] == 0]
+
+    # si escludono le run in cui i client si sono prestati dati perchè non sono una federazione vera
+    reali = [k for k in gruppi if k[1] == "subnet" and k[2] == 0 and k[3] == 0]
     if not reali:
         reali = list(gruppi)
     return max(reali, key=lambda k: float(np.mean([macro_f1_selezionata(h) for h in gruppi[k]])))

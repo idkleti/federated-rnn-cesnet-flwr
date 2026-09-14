@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Questo file contiene le run mostrate in RISULTATI.md
-# Tempo totale di addestramento per la mia macchina: 39 ore
+# Tempo totale di addestramento per la mia macchina: 47 ore
 
 # Eseguibile con:
 #     source venv/bin/activate  # versione python3.12 preferibilmente
@@ -9,7 +9,7 @@
 # solo dopo aver scaricato il dataset ed eventualmente caricato le shard (python prepare_data.py)
 # NOTA: ad ogni esecuzione vengono aggiunti nuovi file in ../outputs/
 
-# Per evitare di dover lasciare in esecuzione per 39 ore, commentare i blocchi che non servono e lanciarne uno per volta
+# Per evitare di dover lasciare in esecuzione per 47 ore, commentare i blocchi che non servono e lanciarne uno per volta
 
 # Nel progetto le configurazioni vengono ripetute 25 volte poichè con solo un paio di esecuzioni non è possibile distinguere tra coincidenza e risultati veri
 
@@ -44,14 +44,14 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\
 
 # 3. strategie alternative al punto 2 con stessa partecipazione del 50% e decadimento learning rate
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedadam\""
-esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\"" # usa proxumal-mu=0.1 di default
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\"" # usa proximal-mu=0.1 di default
 
 
 # 4. 100 round anzichè 50
 esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
 
 # 5. cambiamento del valore di proximal-mu di fedprox
-# QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA PER ULTIMA DOPO TUTTE LE ALTRE PROVE NEL FILE
+# QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA DOPO QUELLE DEI PUNTI 1-8
 # proximal-mu pesa quanto un client viene penalizzato man mano che si allontana dai pesi che il server gli ha spedito
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=0.2"
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox\" proximal-mu=0.5"
@@ -90,6 +90,18 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\
 
 # 8. indirizzi mescolati con dimensioni delle subnet reali
 python prepare_data.py --partition random-sizes
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
+
+# 9. fedyogi, sulla partizione per subnet come le altre strategie del punto 3
+# QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA DOPO QUELLE SU proximal-mu
+python prepare_data.py
+esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedyogi\""
+
+
+# 10. mini-dataset condiviso
+# 500 serie per classe estratte una volta sola e date identiche a tutti i client, quindi duplicate
+# QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA PER ULTIMA, DOPO QUELLE SU fedyogi
+python prepare_data.py --mini-dataset 500
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 # La divisione per istituzione non viene effettuata poichè risulterebbe troppo simile alla divisione per subnet

@@ -96,6 +96,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Ogni client con meno di N net-device ne riceve copie dai client che ne hanno di più",
     )
 
+    p.add_argument(
+        "--mini-dataset",
+        type=int,
+        default=0, # default è spento
+        metavar="K",
+        help="Un insieme di K serie per classe viene estratto una volta e dato identico a tutti i client",
+    )
+
     return p.parse_args(argv)
 
 # Le etichette non si trovano dentro le serie temporali ma all'interno di device_type_ip_address_full (annotazione a parte), che copre solo 
@@ -331,6 +339,54 @@ def rebalance_net_device(
         len(donatori),
     )
     return prestiti
+
+
+# --mini-dataset K
+# un insieme bilanciato di K serie per classe viene estratto a caso una volta sola e dato IDENTICO a tutti i client, come il subset condiviso G di Zhao et al.
+
+# le serie scelte vengono tolte dalle righe proprie di chi le possedeva perchè finiscono nel blocco condiviso (che non finisce mai in validazione)
+def mini_dataset_condiviso(
+    parts: list[np.ndarray],
+    pool_y: np.ndarray,
+    per_classe: int,
+    *,
+    seed: int,
+) -> tuple[list[np.ndarray], np.ndarray]:
+    rng = np.random.default_rng(seed)
+
+    scelte: list[int] = []
+    for classe, nome in enumerate(cfg.CLASS_NAMES):
+        candidati = np.concatenate([p[pool_y[p] == classe] for p in parts])
+        if len(candidati) < per_classe:
+            raise SystemExit(
+                f"Per l'insieme condiviso servono {per_classe:,} serie di {nome} "
+                f"ma nel pool ce ne sono {len(candidati):,}. Abbassa --mini-dataset."
+            )
+        scelte.extend(int(v) for v in rng.choice(candidati, size=per_classe, replace=False))
+    condiviso = np.array(sorted(scelte), dtype=int)
+
+    dentro = set(int(v) for v in condiviso)
+    ridotte = [np.array([int(i) for i in p if int(i) not in dentro], dtype=int) for p in parts]
+
+    # un client rimasto con meno di due righe proprie non può più essere diviso in addestramento e validazione
+    troppo_piccoli = [c for c, v in enumerate(ridotte) if len(v) < 2]
+    if troppo_piccoli:
+        raise SystemExit(
+            f"L'insieme condiviso lascerebbe i client {troppo_piccoli} con meno di due righe proprie. "
+            f"Abbassa --mini-dataset."
+        )
+
+    ceduti = sum(len(p) - len(r) for p, r in zip(parts, ridotte))
+    log.info(
+        "Insieme condiviso: %s serie (%d per classe) date a tutti e %d i client, "
+        "cioè %s righe di addestramento in più nella federazione. %d serie escono dalle righe proprie di chi le possedeva.",
+        f"{len(condiviso):,}",
+        per_classe,
+        len(parts),
+        f"{len(condiviso) * len(parts):,}",
+        ceduti,
+    )
+    return ridotte, condiviso
 
 
 # carico le serie grezze a blocchi
@@ -618,10 +674,21 @@ def main(argv: list[str] | None = None) -> int:
     print_summary(summary, args.partition)
 
     # prestiti[c] sono indici dell'insieme di indirizzi che il client c riceve da altri
+    # non posso usare entrambi i modi di condivisione altrimenti il confronto non è leggibile
+    if args.rebalance_net_device > 0 and args.mini_dataset > 0:
+        raise SystemExit(
+            "--rebalance-net-device e --mini-dataset non si possono usare insieme: "
+            "il primo presta solo net-device a chi ne ha pochi, il secondo dà a tutti lo stesso insieme."
+        )
     if args.rebalance_net_device > 0:
         prestiti = rebalance_net_device(
             parts, pool_y, args.rebalance_net_device, seed=cfg.RANDOM_STATE
         )
+    elif args.mini_dataset > 0:
+        parts, condiviso = mini_dataset_condiviso(
+            parts, pool_y, args.mini_dataset, seed=cfg.RANDOM_STATE
+        )
+        prestiti = [condiviso for _ in parts]
     else:
         prestiti = [np.array([], dtype=int) for _ in parts]
 
@@ -703,6 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         "min_subnet_size": args.min_subnet_size,
         # quante copie di net-device ha ricevuto ogni client da cui ricavo quante righe dello shard sono davvero sue
         "rebalance_net_device": int(args.rebalance_net_device),
+        "mini_dataset": int(args.mini_dataset),
         "own_per_client": [int(len(p)) for p in parts],
         "donated_per_client": [int(len(p)) for p in prestiti],
         "random_state": cfg.RANDOM_STATE,
@@ -732,6 +800,11 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"Ribilanciamento: {sum(len(p) for p in prestiti):,} net-device copiati "
             f"per portare ogni client ad almeno {args.rebalance_net_device}"
+        )
+    if args.mini_dataset > 0:
+        print(
+            f"Mini-dataset condiviso: {len(prestiti[0]):,} serie ({args.mini_dataset} per classe) "
+            f"date identiche a tutti e {len(parts)} i client"
         )
     print(
         "Ricordati che options.num-supernodes in pyproject.toml deve valere "

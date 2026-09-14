@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "Classificazione federata del tipo di dispositivo dal traffico di rete (CESNET-TimeSeries24)"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "flwr[simulation]>=1.28.0",
+    "flwr[simulation]==1.32.1",
     "torch>=2.7.0",
     "cesnet-tszoo>=2.2.0",
     "scikit-learn>=1.4.0",
@@ -52,11 +52,11 @@ batch-size = 64
 # Il learning rate cala di questo fattore 0.97 a ogni round, quindi l'ultimo passo vale il 22% del primo. 
 lr-decay = 0.97
 
-# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam)
+# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam, fedyogi)
 strategy = "fedavg"
 
 # Quanto il server modifica i pesi del modello globale quando riceve aggiornamenti dai client
-# NOTA: vale solo per FedAdam perchè fa ottimizzazioni lato server 
+# NOTA: vale solo per FedAdam e FedYogi perchè fanno ottimizzazioni lato server
 # DEFAULT: 0.1 con macro-f1 0.5947 mentre 0.01 con macro-f1 0.5915 
 # CONCLUSIONE: nessuna differenza con oscillazione FedAdam
 server-learning-rate = 0.01
