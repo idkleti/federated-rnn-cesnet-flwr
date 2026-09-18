@@ -9,7 +9,7 @@
 #SBATCH --qos=gpuResA_qos
 #SBATCH --partition=gpu_H100
 
-set -e
+set -euo pipefail
 
 echo "Job started on $(date)"
 
@@ -21,10 +21,23 @@ conda activate 312_l40s
 
 # Carica modulo CUDA
 module load cuda/12.2
-LD_LIBRARY_PATH="$LD_LIBRARY_PATH"64
 
 # Imposta la directory di lavoro
-cd /hpc/home/clmlnz/federated-rnn-cesnet-flwr
+PROJECT_ROOT=/hpc/home/clmlnz/federated-rnn-cesnet-flwr
+cd "$PROJECT_ROOT"
+
+# Il dataset è stato trasferito in precedenza da una macchina con Internet.
+# FEDRNN_OFFLINE fa sì che ogni rigenerazione degli shard in esperimenti.sh
+# rifiuti download impliciti.
+export CESNET_DATA_ROOT="$PROJECT_ROOT/time_dataset"
+export FEDRNN_OFFLINE=1
+export PYTHONUNBUFFERED=1
+
+if [[ ! -f "$CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" ]]; then
+    echo "Dataset offline non pronto: manca $CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" >&2
+    echo "Esegui prima tools/hpc_data.sh install sul nodo di login." >&2
+    exit 1
+fi
 
 echo "Current working directory: $(pwd) - Running on $(hostname)"
 

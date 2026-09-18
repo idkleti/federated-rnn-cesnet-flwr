@@ -63,6 +63,12 @@ CHUNK_SERIES = 8000
 # worker di TS-Zoo per leggere dall'HDF5
 WORKERS = 4
 
+# Il manifest viene creato da ``--download-only`` dopo aver forzato il
+# caricamento di tutti i file che questo script usa (serie, annotazioni e
+# ids_relationship). Serve a rendere esplicito che sul cluster non si deve
+# mai tentare un download implicito da TS-Zoo.
+DATA_MANIFEST_FILE = ".fedrnn-cesnet-ready.json"
+
 # Non filtro sul dataset originale perchè voglio rispettare il modello federato dove ognuno ha i propri dati, mentre con gli shard la separazione
 # è proprio fisica e non ha accesso ai dati degli altri client
 
@@ -102,6 +108,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0, # default è spento
         metavar="K",
         help="Un insieme di K serie per classe viene estratto una volta e dato identico a tutti i client",
+    )
+
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Scarica e verifica tutti i file del dataset necessari, senza creare shard",
+    )
+    mode.add_argument(
+        "--offline",
+        action="store_true",
+        help="Usa soltanto un dataset già preparato con --download-only; non tenta download",
     )
 
     return p.parse_args(argv)
@@ -573,6 +591,54 @@ def ensure_dataset_complete(data_root: Path) -> None:
     CESNET_TimeSeries24._download(nome, str(percorso))
 
 
+def data_manifest_path(data_root: Path) -> Path:
+    return data_root / DATA_MANIFEST_FILE
+
+
+def write_data_manifest(data_root: Path) -> None:
+    """Registra nomi e dimensioni dei file materializzati da TS-Zoo."""
+    files = []
+    for path in sorted(data_root.rglob("*")):
+        if path.is_file() and path != data_manifest_path(data_root):
+            files.append({
+                "path": str(path.relative_to(data_root)),
+                "size": path.stat().st_size,
+            })
+    if not files:
+        raise RuntimeError(f"Nessun file del dataset trovato in {data_root}.")
+    data_manifest_path(data_root).write_text(
+        json.dumps({"files": files}, indent=2), encoding="utf-8"
+    )
+    log.info("Manifest offline scritto: %s (%d file)", data_manifest_path(data_root), len(files))
+
+
+def validate_offline_data(data_root: Path) -> None:
+    """Controlla il bundle prima di chiamare TS-Zoo, che altrimenti scaricherebbe."""
+    path = data_manifest_path(data_root)
+    if not path.exists():
+        raise SystemExit(
+            f"Dataset offline non verificato: manca {path}.\n"
+            "Su una macchina con Internet esegui `python prepare_data.py --download-only`, "
+            "poi copia l'intera directory time_dataset/ sul cluster."
+        )
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))["files"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise SystemExit(f"Manifest offline non valido: {path} ({exc}).") from exc
+
+    invalid = []
+    for entry in entries:
+        file_path = data_root / entry["path"]
+        if not file_path.is_file() or file_path.stat().st_size != entry["size"]:
+            invalid.append(entry["path"])
+    if invalid:
+        preview = ", ".join(invalid[:5])
+        raise SystemExit(
+            f"Il bundle offline è incompleto o corrotto ({len(invalid)} file: {preview}). "
+            "Ricopialo dalla macchina che ha eseguito --download-only."
+        )
+
+
 # apro il dataset (al primo giro si scarica) -> le etichette vengono lette -> viene effettuato lo split (come quello del centralizzato) ->
 # -> faccio la divisione per subnet -> scrivo gli shard a blocchi e i metadati
 
@@ -593,10 +659,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.rebalance_net_device > 0:
         log.info("Ribilanciamento net-device a %d per client", args.rebalance_net_device)
 
-    # shard precedenti cancellati mentre test set server resta
-    clean_shard_dir()
-
-    ensure_dataset_complete(cfg.DATA_ROOT)
+    if args.offline:
+        validate_offline_data(cfg.DATA_ROOT)
+    else:
+        ensure_dataset_complete(cfg.DATA_ROOT)
 
     dataset = CESNET_TimeSeries24.get_dataset(
         data_root=str(cfg.DATA_ROOT),
@@ -608,6 +674,18 @@ def main(argv: list[str] | None = None) -> int:
     ts_id_col = dataset.metadata.ts_id_name
 
     labels = load_labels(dataset)
+    # Anche questa tabella può essere recuperata pigramente da TS-Zoo: la
+    # carico qui così --download-only materializza proprio tutto ciò che usa
+    # il preprocessing.
+    relationship = dataset.get_additional_data("ids_relationship")
+
+    if args.download_only:
+        write_data_manifest(cfg.DATA_ROOT)
+        print(f"Dataset pronto per il trasferimento: {cfg.DATA_ROOT}")
+        return 0
+
+    # shard precedenti cancellati mentre test set server resta
+    clean_shard_dir()
 
     # split
     ts_ids_all = labels.index.to_numpy()
@@ -630,7 +708,6 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # partizione per subnet istituzionale
-    relationship = dataset.get_additional_data("ids_relationship")
     group_col = resolve_group_column(relationship, ts_id_col)
     log.info(
         "Partizione per gruppo naturale sulla colonna %r (%s gruppi nel dataset)",

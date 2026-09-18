@@ -19,6 +19,17 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd -- "$script_dir/.." # Flower deve essere eseguito accanto a pyproject.toml
 
+# Per retrocompatibilità il comportamento predefinito resta invariato. Sul
+# cluster, FEDRNN_OFFLINE=1 aggiunge --offline a ogni rigenerazione degli shard.
+prepare_data_args=()
+if [[ "${FEDRNN_OFFLINE:-0}" == "1" ]]; then
+    prepare_data_args=(--offline)
+fi
+
+prepara_dati() {
+    python prepare_data.py "${prepare_data_args[@]}" "$@"
+}
+
 R=50   # round per le run normali
 N=25   # quante volte ripetere ogni configurazione
 
@@ -36,7 +47,7 @@ esegui() {
 
 
 # RUN EFFETTUATE in maniera "realistica" (dati divisi per subnet)
-python prepare_data.py
+prepara_dati
 
 # 1. il numero di client che partecipano viene modificato al 30%, 50% e 100%
 esegui "num-server-rounds=$R fraction-train=0.3 lr-decay=1.0 strategy=\"fedavg\""
@@ -76,7 +87,7 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox
 # !! IL TEST SET DEL SERVER NON VIENE MODIFICATO E RIMANE SEMPRE LO STESSO AD OGNI ESECUZIONE 
 
 # 6. indirizzi mescolati a caso con dimensione dei client uguale
-python prepare_data.py --partition random
+prepara_dati --partition random
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 
@@ -91,23 +102,23 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\
 # una serie che potrebbe aver già visto in addestramento in precedenza, aumentando la f1 score senza alcun miglioramento reale
 
 # Con N=10 ricevono copie i 53 client che ne hanno meno di dieci (27 non ne hanno nemmeno uno e 26 che ne hanno fra uno e nove)
-python prepare_data.py --rebalance-net-device 10
+prepara_dati --rebalance-net-device 10
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 # 8. indirizzi mescolati con dimensioni delle subnet reali
-python prepare_data.py --partition random-sizes
+prepara_dati --partition random-sizes
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 # 9. fedyogi, sulla partizione per subnet come le altre strategie del punto 3
 # QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA DOPO QUELLE SU proximal-mu
-python prepare_data.py
+prepara_dati
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedyogi\""
 
 
 # 10. mini-dataset condiviso
 # 500 serie per classe estratte una volta sola e date identiche a tutti i client, quindi duplicate
 # QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA PER ULTIMA, DOPO QUELLE SU fedyogi
-python prepare_data.py --mini-dataset 500
+prepara_dati --mini-dataset 500
 esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedavg\""
 
 # La divisione per istituzione non viene effettuata poichè risulterebbe troppo simile alla divisione per subnet

@@ -40,6 +40,24 @@ flwr run . --stream        # aggiungere PYTHONUNBUFFERED=1 qualora il log non ve
 python tools/grafici.py
 ```
 
+### Esecuzione su HPC senza Internet
+
+Lo script `tools/hpc_data.sh` automatizza il trasferimento del dataset, senza cambiare il comportamento dei comandi esistenti. Su una macchina con rete (con una versione di `cesnet-tszoo` compatibile con quella del cluster) crea il bundle:
+
+```bash
+bash tools/hpc_data.sh bundle /tmp/cesnet-time-dataset.tar.gz
+```
+
+Trasferiscilo sul cluster con il metodo consentito dall'infrastruttura. Sul cluster installalo in una directory vuota e genera gli shard; le opzioni finali vengono inoltrate a `prepare_data.py`:
+
+```bash
+bash tools/hpc_data.sh install /hpc/home/clmlnz/cesnet-time-dataset.tar.gz /hpc/home/clmlnz/federated-rnn-cesnet-flwr/time_dataset
+bash tools/hpc_data.sh shards /hpc/home/clmlnz/federated-rnn-cesnet-flwr/time_dataset --partition subnet
+flwr run . --stream
+```
+
+`bundle` esegue `prepare_data.py --download-only` e crea l'archivio; `install` rifiuta directory non vuote; `shards` usa sempre `--offline`. Il manifest verifica nomi e dimensioni dei file prima di inizializzare TS-Zoo, quindi un trasferimento incompleto viene segnalato senza tentare download. Rimangono supportati anche i comandi originali, per esempio `python prepare_data.py` su una macchina con Internet.
+
 Gli iperparametri si cambiano in `pyproject.toml` oppure da linea di comando:
 
 ```bash
