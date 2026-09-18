@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import sys
 from collections import defaultdict
+
+from matplotlib.patches import Patch
 from pathlib import Path
 
 import matplotlib
@@ -55,7 +57,14 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
             continue
         if not run.get("completed", False):
             continue
-        if len(h["central_test_metrics"]) < n_round + 1:  # +1 per il round 0
+        # Dal protocollo corrente il test viene valutato una sola volta, sul
+        # checkpoint selezionato dalla validation. Gli storici precedenti, con il
+        # test disponibile a ogni round, non vengono mescolati a questi risultati.
+        if run.get("test_evaluation") != "selected_checkpoint_once":
+            continue
+        if not h.get("selected_test_metrics"):
+            continue
+        if len(h.get("federated_eval_metrics", {})) < n_round:
             continue
 
         # il passo del server di FedAdam e il richiamo di FedProx fanno parte della chiave, altrimenti run con eta o con mu diverso verrebbero messe assieme.
@@ -78,25 +87,46 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
 
 
 # come si chiama una partizione nelle legende dei grafici
-NOME_PARTIZIONE = {
-    "subnet": "subnet",
-    "random": "casuale",
-    "random-sizes": "casuale a dimensioni reali",
+PARTITION_LABELS = {
+    "subnet": "natural subnet partition",
+    "random": "randomized IID reference",
+    "random-sizes": "randomized, natural client sizes",
 }
+
+
+def selected_validation_macro_f1(history: dict) -> float:
+    """Validation score used to select the checkpoint, never a test score."""
+    return float(history["run"]["selected_fed_macro_f1"])
+
+
+def iid_reference_configuration(groups: dict[tuple, list[dict]]) -> tuple | None:
+    """Best randomized-IID configuration according to validation only."""
+    candidates = [
+        key for key in groups
+        if key[1] == "random" and key[2] == 0 and key[3] == 0
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda key: float(np.mean([
+            selected_validation_macro_f1(history) for history in groups[key]
+        ])),
+    )
 
 
 def etichetta(chiave: tuple) -> str:
     strategia, partizione, ribilanciamento, mini_dataset, ft, decay, n_round, server_lr, mu = chiave
-    testo = f"{strategia}, {NOME_PARTIZIONE.get(partizione, partizione)}"
+    testo = f"{strategia}, {PARTITION_LABELS.get(partizione, partizione)}"
     if ribilanciamento:
-        testo += f" +{ribilanciamento} net-dev"
+        testo += f" +{ribilanciamento} net-device samples"
     if mini_dataset:
-        testo += f" +mini-dataset {mini_dataset}/classe"
-    testo += f", partecipazione {ft:g}"
+        testo += f", shared set: {mini_dataset}/class"
+    testo += f", participation {ft:g}"
     if decay != 1.0:
-        testo += f", lr x{decay:g}"
+        testo += f", LR decay {decay:g}"
     if n_round != 50:
-        testo += f", {n_round} round"
+        testo += f", {n_round} rounds"
     # compare solo per FedAdam
     if server_lr is not None and server_lr != 0.01:
         testo += f", eta {server_lr:g}"
@@ -107,15 +137,16 @@ def etichetta(chiave: tuple) -> str:
 
 
 def serie_macro_f1(h: dict) -> tuple[np.ndarray, np.ndarray]:
-    c = h["central_test_metrics"]
+    # La curva e' di validation federata: il test non viene usato round-per-round.
+    c = h["federated_eval_metrics"]
     round_ = np.array(sorted(int(r) for r in c))
     valori = np.array([c[str(r)]["macro_f1"] for r in round_])
     return round_, valori
 
 
 def macro_f1_selezionata(h: dict) -> float:
-    # macro-F1 sul test del modello che quella run ha effettivamente scelto
-    return h["central_test_metrics"][str(h["run"]["selected_round"])]["macro_f1"]
+    # Macro-F1 del test, valutata una volta sul checkpoint gia' scelto con validation.
+    return float(h["selected_test_metrics"]["macro_f1"])
 
 
 def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
@@ -127,14 +158,19 @@ def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
     reali = [k for k in gruppi if k[1] == "subnet" and k[2] == 0 and k[3] == 0]
     if not reali:
         reali = list(gruppi)
-    return max(reali, key=lambda k: float(np.mean([macro_f1_selezionata(h) for h in gruppi[k]])))
+    return max(
+        reali,
+        key=lambda k: float(np.mean([
+            selected_validation_macro_f1(h) for h in gruppi[k]
+        ])),
+    )
 
 
 def _salva(fig, percorso: Path) -> None:
     percorso.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(percorso, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  scritto", percorso.name)
+    print("  wrote", percorso.name)
 
 
 # FIGURA 1: CURVE DI APPRENDIMENTO
@@ -151,26 +187,47 @@ def media_mobile(valori: np.ndarray, finestra: int = 5) -> np.ndarray:
 
 def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 5.5))
+    iid_key = iid_reference_configuration(gruppi)
 
-    for chiave in sorted(gruppi):
-        run = gruppi[chiave]
-        curve = np.stack([serie_macro_f1(h)[1] for h in run])
-        round_ = serie_macro_f1(run[0])[0]
-        media = curve.mean(axis=0) # media se config eseguita più volte
-        # linea piena con media mobile
-        linea, = ax.plot(round_, media_mobile(media), linewidth=2.2,
-                         label=f"{etichetta(chiave)}  (n={len(run)})")
-        # dato vero round per round
-        ax.plot(round_, media, linewidth=0.9, alpha=0.25,
-                color=linea.get_color())
+    # Draw the IID reference last so it remains visible when lines overlap.
+    ordered_keys = [key for key in sorted(gruppi) if key != iid_key]
+    if iid_key is not None:
+        ordered_keys.append(iid_key)
+
+    for key in ordered_keys:
+        histories = gruppi[key]
+        curves = np.stack([serie_macro_f1(history)[1] for history in histories])
+        rounds = serie_macro_f1(histories[0])[0]
+        mean_curve = curves.mean(axis=0)
+        is_iid_reference = key == iid_key
+        label = etichetta(key)
+        if is_iid_reference:
+            label = f"IID reference — {label}"
+        line, = ax.plot(
+            rounds,
+            media_mobile(mean_curve),
+            linewidth=3.2 if is_iid_reference else 2.2,
+            linestyle="--" if is_iid_reference else "-",
+            color="#E17C05" if is_iid_reference else None,
+            zorder=4 if is_iid_reference else 2,
+            label=f"{label} (n={len(histories)})",
+        )
+        ax.plot(
+            rounds,
+            mean_curve,
+            linewidth=1.1 if is_iid_reference else 0.9,
+            alpha=0.45 if is_iid_reference else 0.25,
+            linestyle="--" if is_iid_reference else "-",
+            color=line.get_color(),
+            zorder=3 if is_iid_reference else 1,
+        )
 
     ax.axhline(BASELINE_MACRO_F1, color="black", linestyle="--", linewidth=1.2)
     ax.text(1, BASELINE_MACRO_F1 + 0.012,
-            f"RNN centralizzata ({BASELINE_MACRO_F1:.4f})", fontsize=9)
-
-    ax.set_xlabel("round")
-    ax.set_ylabel("macro-F1 sul test del server")
-    ax.set_title("Apprendimento federato round per round")
+            f"Centralized RNN ({BASELINE_MACRO_F1:.4f})", fontsize=9)
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("federated validation macro-F1")
+    ax.set_title("Federated validation across communication rounds")
     ax.set_ylim(0, 0.85)
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8.5, loc="lower right")
@@ -182,44 +239,52 @@ def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
 # il rombo invece è massimo ottenuto sul test durante la run, non selezionabile perché richiederebbe di guardare il test
 
 def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
-    voci = []
-    for chiave in sorted(gruppi):
-        sel, mas = [], []
-        for h in gruppi[chiave]:
-            c = h["central_test_metrics"]
-            sel.append(c[str(h["run"]["selected_round"])]["macro_f1"])
-            mas.append(max(m["macro_f1"] for m in c.values()))
-        voci.append((etichetta(chiave), np.mean(sel), np.mean(mas), len(sel)))
+    # One bar per configuration. The test is evaluated once per replicate after
+    # checkpoint selection on validation.
+    iid_key = iid_reference_configuration(gruppi)
+    entries = []
+    for key in sorted(gruppi):
+        values = np.asarray([macro_f1_selezionata(history) for history in gruppi[key]])
+        entries.append((
+            key,
+            etichetta(key),
+            float(values.mean()),
+            float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+            len(values),
+        ))
 
-    voci.sort(key=lambda v: v[1]) # ordina guardando il secondo elemento
-    nomi = [v[0] for v in voci]
-    y = np.arange(len(voci))
+    entries.sort(key=lambda entry: entry[2])
+    labels = [entry[1] for entry in entries]
+    y = np.arange(len(entries))
+    colors = ["#E17C05" if entry[0] == iid_key else "#4C72B0" for entry in entries]
+    hatches = ["//" if entry[0] == iid_key else None for entry in entries]
 
-    fig, ax = plt.subplots(figsize=(9.5, 0.7 * len(voci) + 2.4))
-    ax.barh(y, [v[1] for v in voci], color="#4C72B0", edgecolor="black",
-            height=0.55, label="modello selezionato")
+    fig, ax = plt.subplots(figsize=(9.5, 0.7 * len(entries) + 2.4))
+    bars = ax.barh(y, [entry[2] for entry in entries], color=colors, edgecolor="black",
+                   height=0.55, xerr=[entry[3] for entry in entries], capsize=3)
+    for bar, hatch in zip(bars, hatches):
+        bar.set_hatch(hatch)
 
-    for i, v in enumerate(voci):
-        # posiziono il valore dentro la barra perchè sennò potrebbe scontrarsi con il rombo fuori
-        ax.text(v[1] - 0.012, i, f"{v[1]:.4f}", va="center", ha="right",
+    for i, entry in enumerate(entries):
+        ax.text(entry[2] - 0.012, i, f"{entry[2]:.4f}", va="center", ha="right",
                 fontsize=9.5, color="white", fontweight="bold")
-        ax.plot([v[2]], [i], marker="D", markersize=6, color="#C44E52",
-                label="massimo raggiunto durante la run" if i == 0 else None)
 
     ax.axvline(BASELINE_MACRO_F1, color="black", linestyle="--", linewidth=1.3)
-    # etichetta del riferimento va dentro il grafico in alto
-    ax.text(BASELINE_MACRO_F1 - 0.01, len(voci) - 0.4,
-            f"RNN centralizzata\n{BASELINE_MACRO_F1:.4f}",
+    ax.text(BASELINE_MACRO_F1 - 0.01, len(entries) - 0.4,
+            f"Centralized RNN\n{BASELINE_MACRO_F1:.4f}",
             fontsize=9, ha="right", va="top")
-
     ax.set_yticks(y)
-    ax.set_yticklabels(nomi, fontsize=9.5)
-    ax.set_xlabel("macro-F1 sul test del server")
-    ax.set_title("Quanto costa federare, per configurazione")
+    ax.set_yticklabels(labels, fontsize=9.5)
+    ax.set_xlabel("server test macro-F1")
+    ax.set_title("Performance of validation-selected checkpoints")
     ax.set_xlim(0, 0.85)
-    ax.set_ylim(-0.7, len(voci) - 0.3)
+    ax.set_ylim(-0.7, len(entries) - 0.3)
     ax.grid(alpha=0.3, axis="x")
-    ax.legend(fontsize=8.5, loc="lower right")
+    legend_items = [
+        Patch(facecolor="#4C72B0", edgecolor="black", label="natural or experimental partition"),
+        Patch(facecolor="#E17C05", edgecolor="black", hatch="//", label="randomized IID reference"),
+    ]
+    ax.legend(handles=legend_items, fontsize=8.5, loc="lower right")
     _salva(fig, destinazione / "02_confronto_strategie.png")
 
 
@@ -228,20 +293,22 @@ def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> Non
 
 def figura_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     chiave = configurazione_consegnata(gruppi)
-    # mostro quella che ha prodotto il modello migliore (nel mio caso FedAvg) fra le ripetizioni senza media (ne scelgo 1 sola)
-    h = max(gruppi[chiave], key=macro_f1_selezionata)
-    c = h["central_test_metrics"]
-    round_ = np.array(sorted(int(r) for r in c))
+    run = gruppi[chiave]
+    round_ = serie_macro_f1(run[0])[0]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     for nome in cfg.CLASS_NAMES:
         campo = "f1_" + nome.replace("-", "_")
-        ax.plot(round_, [c[str(r)][campo] for r in round_],
-                label=nome, linewidth=1.6, color=COLORI[nome])
+        curve = np.stack([
+            [h["federated_eval_metrics"][str(r)][campo] for r in round_]
+            for h in run
+        ])
+        ax.plot(round_, curve.mean(axis=0), label=nome, linewidth=1.6,
+                color=COLORI[nome])
 
-    ax.set_xlabel("round")
-    ax.set_ylabel("F1 della classe sul test del server")
-    ax.set_title(f"F1 per classe — {etichetta(chiave)}")
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("class F1 on federated validation")
+    ax.set_title(f"Per-class F1 — {etichetta(chiave)}")
     ax.set_ylim(0, 1)
     ax.grid(alpha=0.3)
     ax.legend()
@@ -253,25 +320,30 @@ def figura_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> No
 
 def figura_confusione(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     chiave = configurazione_consegnata(gruppi)
-    h = max(gruppi[chiave], key=macro_f1_selezionata)
-    voce = h["central_test_metrics"][str(h["run"]["selected_round"])]
-    cm = np.array(voce["confusion"], dtype=float)
+    # Media delle matrici del checkpoint selezionato dalla validation, mai della
+    # replica migliore sul test.
+    matrices = np.stack([
+        np.asarray(h["selected_test_metrics"]["confusion"], dtype=float)
+        for h in gruppi[chiave]
+    ])
+    cm = matrices.mean(axis=0)
     perc = cm / np.maximum(cm.sum(axis=1, keepdims=True), 1)
+    macro = float(np.mean([macro_f1_selezionata(h) for h in gruppi[chiave]]))
 
     fig, ax = plt.subplots(figsize=(6.4, 5.4))
     ax.imshow(perc, cmap="Blues", vmin=0, vmax=1)
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
-            ax.text(j, i, f"{int(cm[i, j])}\n({perc[i, j]:.0%})",
+            ax.text(j, i, f"{cm[i, j]:.1f}\n({perc[i, j]:.0%})",
                     ha="center", va="center", fontsize=10,
                     color="white" if perc[i, j] > 0.5 else "black")
 
     ax.set_xticks(range(cfg.NUM_CLASSES), cfg.CLASS_NAMES, rotation=20, ha="right")
     ax.set_yticks(range(cfg.NUM_CLASSES), cfg.CLASS_NAMES)
-    ax.set_xlabel("predetto")
-    ax.set_ylabel("reale")
-    ax.set_title(f"Matrice di confusione — {etichetta(chiave)}\n"
-                 f"macro-F1 {voce['macro_f1']:.4f}", fontsize=11)
+    ax.set_xlabel("predicted class")
+    ax.set_ylabel("true class")
+    ax.set_title(f"Mean confusion matrix — {etichetta(chiave)}\n"
+                 f"mean macro-F1 {macro:.4f}", fontsize=11)
     _salva(fig, destinazione / "04_matrice_confusione.png")
 
 
@@ -291,9 +363,9 @@ def figura_partizione(meta: dict, destinazione: Path) -> None:
 
     sx.bar(range(len(totali)), totali[ordine], color="#4C72B0")
     sx.set_yscale("log")
-    sx.set_xlabel("client, dal più grande al più piccolo")
-    sx.set_ylabel("indirizzi (scala logaritmica)")
-    sx.set_title(f"Dimensione dei {len(totali)} client")
+    sx.set_xlabel("client rank, largest to smallest")
+    sx.set_ylabel("IP addresses (log scale)")
+    sx.set_title(f"Size of {len(totali)} clients")
     sx.grid(alpha=0.3, axis="y")
 
     net = cc[ordine, idx_net]
@@ -301,14 +373,14 @@ def figura_partizione(meta: dict, destinazione: Path) -> None:
     piu_grande = int(np.argmax(net))
     dx.annotate(
         f"client {ordine[piu_grande]}: {int(net[piu_grande])} net-device\n"
-        f"({100 * net[piu_grande] / max(net.sum(), 1):.0f}% di tutta la classe)",
+        f"({100 * net[piu_grande] / max(net.sum(), 1):.0f}% of all net-device samples)",
         xy=(piu_grande, net[piu_grande]),
         xytext=(piu_grande + len(net) * 0.18, net[piu_grande] * 0.82),
         fontsize=9, arrowprops=dict(arrowstyle="->", lw=1),
     )
-    dx.set_xlabel("client, nello stesso ordine del pannello a sinistra")
-    dx.set_ylabel("net-device posseduti")
-    dx.set_title("Dove sta la classe minoritaria")
+    dx.set_xlabel("client rank, same order as left panel")
+    dx.set_ylabel("local net-device samples")
+    dx.set_title("Location of the minority class")
     dx.grid(alpha=0.3, axis="y")
 
     _salva(fig, destinazione / "05_partizione.png")
@@ -370,12 +442,12 @@ def main() -> int:
     destinazione = cfg.OUTPUT_ROOT / "figure"
 
     if not gruppi:
-        print(f"Nessuna run completa in {cfg.OUTPUT_ROOT}. Lancia prima `flwr run .`.")
+        print(f"No protocol-compliant completed run in {cfg.OUTPUT_ROOT}. Run `flwr run .` first.")
         return 1
 
-    print(f"Configurazioni trovate: {len(gruppi)}")
+    print(f"Configurations found: {len(gruppi)}")
     for chiave in sorted(gruppi):
-        print(f"  {etichetta(chiave)} — {len(gruppi[chiave])} esecuzioni")
+        print(f"  {etichetta(chiave)} — {len(gruppi[chiave])} runs")
 
     figura_curve(gruppi, destinazione)
     figura_confronto(gruppi, destinazione)
@@ -385,21 +457,21 @@ def main() -> int:
     # The selected configuration always supplies the partition statistics,
     # unlike shards/meta.json, which may not be present after cleanup.
     selected_key = configurazione_consegnata(gruppi)
-    selected_history = max(gruppi[selected_key], key=macro_f1_selezionata)
+    selected_history = max(gruppi[selected_key], key=selected_validation_macro_f1)
     summary = selected_history.get("partition", {}).get("summary")
     if summary:
         figura_heatmap_label_skew(summary, destinazione)
     else:
-        print("  nessun riepilogo della partizione: salto la heatmap label skew")
+        print("  no partition summary: skipping label-skew heatmap")
 
     percorso_meta = cfg.meta_path()
     if percorso_meta.exists():
         figura_partizione(json.loads(percorso_meta.read_text(encoding="utf-8")),
                           destinazione)
     else:
-        print(f"  {percorso_meta} non c'è: salto la figura della partizione")
+        print(f"  {percorso_meta} is missing: skipping partition figure")
 
-    print(f"\nFigure in {destinazione}")
+    print(f"\nFigures in {destinazione}")
     return 0
 
 

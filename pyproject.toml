@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "federated-rnn-cesnet"
 version = "1.0.0"
 description = "Classificazione federata del tipo di dispositivo dal traffico di rete (CESNET-TimeSeries24)"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "flwr[simulation]==1.32.1",
     "torch>=2.7.0",
@@ -47,7 +47,7 @@ local-epochs = 2
 # Il valore di learning rate è stato scelto con lr_find() nella versione di partenza centralizzata
 learning-rate = 0.000692
 weight-decay = 0.01
-batch-size = 64
+batch-size = 128
 
 # Il learning rate cala di questo fattore 0.97 a ogni round, quindi l'ultimo passo vale il 22% del primo. 
 lr-decay = 0.97
@@ -83,10 +83,26 @@ proximal-mu = 0.1
 # Alla prima esecuzione di questo codice, flwr lancia un warning ed esegue l'automigrazione (con creazione del file di configurazione)
 
 
-[tool.flwr.federations]
-default = "local-simulation"
 
-[tool.flwr.federations.local-simulation]
-options.num-supernodes = 69
-options.backend.client-resources.num-cpus = 8
-options.backend.client-resources.num-gpus = 0.5
+#######################################################################
+# CONFIGURATION MIGRATION NOTICE:
+#
+# What was previously called "federation config" for SuperLink
+# connections in pyproject.toml has been renamed and moved.
+#
+# These settings are now **SuperLink connection configuration**
+# and are defined in the Flower configuration file.
+#
+# The entries below are commented out intentionally and are kept
+# only as a migration reference.
+#
+# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
+#######################################################################
+
+# [tool.flwr.federations]
+# default = "local-simulation"
+
+# [tool.flwr.federations.local-simulation]
+# options.num-supernodes = 69
+# options.backend.client-resources.num-cpus = 8
+# options.backend.client-resources.num-gpus = 0.2

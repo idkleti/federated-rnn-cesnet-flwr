@@ -13,8 +13,11 @@
 
 # Nel progetto le configurazioni vengono ripetute 25 volte poichè con solo un paio di esecuzioni non è possibile distinguere tra coincidenza e risultati veri
 
-set -u # fallisce se uso variabile non definita
-cd "$(dirname "$0")/.." # mi sposto sopra perchè flwr deve essere eseguito nella stessa dir di pyproject.toml
+set -euo pipefail
+
+# BASH_SOURCE resta il percorso dello script anche se viene eseguito con `source`.
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cd -- "$script_dir/.." # Flower deve essere eseguito accanto a pyproject.toml
 
 R=50   # round per le run normali
 N=25   # quante volte ripetere ogni configurazione
@@ -23,8 +26,11 @@ esegui() {
     echo "==> $*"
     for i in $(seq 1 $N); do
         printf '  [%2d/%2d] %s  ' "$i" "$N" "$(date +%H:%M:%S)"
-        flwr run . --run-config "$*" --stream 2>&1 \
-            | grep -oE "modello selezionato: [0-9.]+" | tail -1
+        if ! output=$(flwr run . --run-config "$*" --stream 2>&1); then
+            printf '%s\n' "$output" >&2
+            return 1
+        fi
+        printf '%s\n' "$output" | grep -oE "checkpoint selezionato: [0-9.]+" | tail -1 || true
     done
 }
 
@@ -48,7 +54,7 @@ esegui "num-server-rounds=$R fraction-train=0.5 lr-decay=0.97 strategy=\"fedprox
 
 
 # 4. 100 round anzichè 50
-esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
+#esegui "num-server-rounds=100 fraction-train=0.5 lr-decay=1.0 strategy=\"fedavg\""
 
 # 5. cambiamento del valore di proximal-mu di fedprox
 # QUESTA SERIE DI ESECUZIONI E' STATA ESEGUITA DOPO QUELLE DEI PUNTI 1-8

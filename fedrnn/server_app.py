@@ -397,7 +397,9 @@ def main(grid: Grid, context: Context) -> None:
     # uso dei dizionari per tenere traccia delle metriche round per round
     history_train: dict[str, dict] = {}
     history_fed_eval: dict[str, dict] = {}
-    history_central: dict[int, dict] = {}
+    # Il test non entra nel ciclo di selezione: viene eseguito una sola volta,
+    # dopo che la validation federata ha scelto il checkpoint.
+    selected_test_metrics: dict[str, float | list] | None = None
 
     cfg.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -442,7 +444,9 @@ def main(grid: Grid, context: Context) -> None:
                 "selected_round": best["round"],
                 "selected_fed_macro_f1": best["fed_macro_f1"],
                 "completed": completo, # chi legge lo storico deve essere in grado di capire se un esperimento è stato completato o meno
-                "rounds_done": len(history_central) - 1 if history_central else 0,
+                "rounds_done": len(history_fed_eval),
+                "test_evaluation": "selected_checkpoint_once",
+                "test_evaluations": 1 if selected_test_metrics is not None else 0,
             },
             "partition": {
                 "kind": meta["partition"],
@@ -457,66 +461,43 @@ def main(grid: Grid, context: Context) -> None:
             "class_weights": [float(v) for v in class_weights],
             "train_metrics": history_train,
             "federated_eval_metrics": history_fed_eval,
-            "central_test_metrics": history_central,
+            # Campo separato: il test non e' una serie temporale per scegliere
+            # round o configurazioni a posteriori.
+            "selected_test_metrics": selected_test_metrics,
         }
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
     
     
-    # Valutazione centralizzata del server sul test set
+    # Callback invocato dopo l'aggregazione della validation client-side. Seleziona
+    # il checkpoint esclusivamente con quella validation: non carica ne' valuta il
+    # test set.
+    best_state_dict: dict[str, torch.Tensor] | None = None
 
-    # gira sul server alla fine di ogni round 
-    def global_evaluate(server_round: int, arrays: ArrayRecord) -> MetricRecord:
-        model = DeviceRNN()
-        model.load_state_dict(arrays.to_torch_state_dict())
+    def select_checkpoint(server_round: int, arrays: ArrayRecord) -> MetricRecord:
+        nonlocal best_state_dict
 
-        loader = build_server_test_loader(batch_size=256, mean=mean, std=std)
-        loss, confusion, n_samples = evaluate(
-            model, loader, class_weights=class_weights, device=device
-        )
-        result = metrics_from_confusion(confusion)
-        result["test_loss"] = loss
-        result[WEIGHT_KEY] = float(n_samples)
-
-        log.info(
-            "Round %d | TEST centralizzato su %d indirizzi | macro-F1 %.4f | "
-            "F1 end-device %.4f, net-device %.4f, server %.4f",
-            server_round,
-            n_samples,
-            result["macro_f1"],
-            result["f1_end_device"],
-            result["f1_net_device"],
-            result["f1_server"],
-        )
-        if server_round == num_rounds:
-            log.info(
-                "Matrice di confusione sul test centralizzato:\n%s",
-                format_confusion(confusion),
-            )
-
-        history_central[server_round] = {
-            **{k: float(v) for k, v in result.items()},
-            "confusion": confusion.tolist(),
-        }
-
-        # il round 0 valuta il modello appena inizializzato quindi non ha una valutazione federata
+        # Il round 0 non ha una validation federata.
         fed = history_fed_eval.get(str(server_round))
         if fed is not None and fed["macro_f1"] > best["fed_macro_f1"]:
             best["fed_macro_f1"] = float(fed["macro_f1"])
             best["round"] = server_round
-            torch.save(arrays.to_torch_state_dict(), best_model_path)
+            best_state_dict = {
+                name: value.detach().cpu().clone()
+                for name, value in arrays.to_torch_state_dict().items()
+            }
+            torch.save(best_state_dict, best_model_path)
             log.info(
-                "   nuovo modello migliore al round %d (macro-F1 federata %.4f, "
-                "sul test %.4f)",
+                "   nuovo checkpoint al round %d (macro-F1 validation federata %.4f)",
                 server_round,
                 fed["macro_f1"],
-                result["macro_f1"],
             )
 
-        salva_storico(completo=(server_round == num_rounds))
-        return MetricRecord({k: float(v) for k, v in result.items()})
+        # Salvataggio parziale, senza alcuna metrica di test.
+        salva_storico(completo=False)
+        return MetricRecord({"selected_validation_round": float(best["round"])})
 
-    
+
     # Costruzione della strategia
     strategy = build_strategy(
         strategy_name,
@@ -534,29 +515,47 @@ def main(grid: Grid, context: Context) -> None:
         num_rounds=num_rounds,
         train_config=ConfigRecord(shared_config),
         evaluate_config=ConfigRecord(shared_config),
-        evaluate_fn=global_evaluate,
+        evaluate_fn=select_checkpoint,
     )
     elapsed = time.time() - t0
 
-    
+    if best_state_dict is None:
+        raise RuntimeError(
+            "Nessuna validation federata disponibile: il checkpoint non puo' "
+            "essere scelto senza usare il test set."
+        )
+
+    # Unica valutazione sul test, eseguita solo sul checkpoint gia' selezionato.
+    selected_model = DeviceRNN()
+    selected_model.load_state_dict(best_state_dict)
+    loader = build_server_test_loader(batch_size=256, mean=mean, std=std)
+    loss, confusion, n_samples = evaluate(
+        selected_model, loader, class_weights=class_weights, device=device
+    )
+    selected_test_metrics = {
+        **{k: float(v) for k, v in metrics_from_confusion(confusion).items()},
+        "test_loss": float(loss),
+        WEIGHT_KEY: float(n_samples),
+        "selected_round": float(best["round"]),
+        "confusion": confusion.tolist(),
+    }
+    log.info(
+        "TEST una sola volta sul checkpoint scelto dalla validation (round %d) | "
+        "macro-F1 %.4f | F1 end-device %.4f, net-device %.4f, server %.4f\n%s",
+        best["round"],
+        selected_test_metrics["macro_f1"],
+        selected_test_metrics["f1_end_device"],
+        selected_test_metrics["f1_net_device"],
+        selected_test_metrics["f1_server"],
+        format_confusion(confusion),
+    )
+
     # Salvataggi finali
-    # salvataggio del modello dell'ultimo round
     model_path = cfg.OUTPUT_ROOT / f"model_{tag}_{stamp}.pt"
     torch.save(result.arrays.to_torch_state_dict(), model_path)
     salva_storico(completo=True)
     log.info("Modello finale salvato in %s", model_path)
     log.info("Storico salvato in %s", history_path)
-
-    
-    # Confronto con modello centralizzato
-    #   - ultimo round: quello che otterrei senza guardare niente
-    #   - selezionato: modello scelto sulla validazione federata ed è il risultato da riportare 
-    #   - massimo sul test: tetto teorico del massimo del round
-    final = history_central.get(num_rounds, {})
-    selected = history_central.get(best["round"], {})
-    top_round = max(
-        history_central, key=lambda r: history_central[r]["macro_f1"], default=None
-    )
 
     log.info("=" * 78)
     log.info(
@@ -565,24 +564,14 @@ def main(grid: Grid, context: Context) -> None:
         elapsed / 60,
         elapsed / max(num_rounds, 1),
     )
-    if final:
-        log.info("macro-F1 sul test, ultimo round       : %.4f", final["macro_f1"])
-    if selected:
-        log.info(
-            "macro-F1 sul test, modello selezionato: %.4f  (round %d, scelto con "
-            "macro-F1 federata %.4f)",
-            selected["macro_f1"],
-            best["round"],
-            best["fed_macro_f1"],
-        )
-        log.info("   salvato in %s", best_model_path.name)
-    if top_round is not None:
-        log.info(
-            "macro-F1 sul test, massimo raggiunto : %.4f  (round %d, non "
-            "selezionabile senza guardare il test)",
-            history_central[top_round]["macro_f1"],
-            top_round,
-        )
+    log.info(
+        "macro-F1 sul test, checkpoint selezionato: %.4f  (round %d, scelto con "
+        "macro-F1 validation federata %.4f)",
+        selected_test_metrics["macro_f1"],
+        best["round"],
+        best["fed_macro_f1"],
+    )
+    log.info("   salvato in %s", best_model_path.name)
     log.info(
         "Riferimento: RNN centralizzata con pesi di classe, macro-F1 0.7615 "
         "sugli stessi 9.238 indirizzi"
