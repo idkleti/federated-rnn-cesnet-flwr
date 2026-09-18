@@ -35,7 +35,7 @@ export PYTHONUNBUFFERED=1
 
 if [[ ! -f "$CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" ]]; then
     echo "Dataset offline non pronto: manca $CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" >&2
-    echo "Esegui prima tools/hpc_data.sh install sul nodo di login." >&2
+    echo "Esegui prima python prepare_data.py --download-only sul nodo di login." >&2
     exit 1
 fi
 

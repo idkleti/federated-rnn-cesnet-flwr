@@ -40,23 +40,32 @@ flwr run . --stream        # aggiungere PYTHONUNBUFFERED=1 qualora il log non ve
 python tools/grafici.py
 ```
 
-### Esecuzione su HPC senza Internet
+### Esecuzione su Copernico HPC
 
-Lo script `tools/hpc_data.sh` automatizza il trasferimento del dataset, senza cambiare il comportamento dei comandi esistenti. Su una macchina con rete (con una versione di `cesnet-tszoo` compatibile con quella del cluster) crea il bundle:
+Su Copernico il download viene eseguito **una sola volta sul nodo di login**, che deve avere accesso a Internet. Il job GPU resta senza rete e legge il dataset da `/hpc/home/clmlnz/federated-rnn-cesnet-flwr/time_dataset`.
 
-```bash
-bash tools/hpc_data.sh bundle /tmp/cesnet-time-dataset.tar.gz
-```
-
-Trasferiscilo sul cluster con il metodo consentito dall'infrastruttura. Sul cluster installalo in una directory vuota e genera gli shard; le opzioni finali vengono inoltrate a `prepare_data.py`:
+Dal nodo di login:
 
 ```bash
-bash tools/hpc_data.sh install /hpc/home/clmlnz/cesnet-time-dataset.tar.gz /hpc/home/clmlnz/federated-rnn-cesnet-flwr/time_dataset
-bash tools/hpc_data.sh shards /hpc/home/clmlnz/federated-rnn-cesnet-flwr/time_dataset --partition subnet
-flwr run . --stream
+cd /hpc/home/clmlnz/federated-rnn-cesnet-flwr
+module load miniconda3/24.4.0
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate 312_l40s
+module load cuda/12.2
+
+which python  # deve mostrare ~/.conda/envs/312_l40s/bin/python
+PYTHON_BIN="$HOME/.conda/envs/312_l40s/bin/python" \
+  python prepare_data.py --download-only
 ```
 
-`bundle` esegue `prepare_data.py --download-only` e crea l'archivio; `install` rifiuta directory non vuote; `shards` usa sempre `--offline`. Il manifest verifica nomi e dimensioni dei file prima di inizializzare TS-Zoo, quindi un trasferimento incompleto viene segnalato senza tentare download. Rimangono supportati anche i comandi originali, per esempio `python prepare_data.py` su una macchina con Internet.
+Non serve creare un archivio `.tar.gz`: i nodi GPU condividono `/hpc/home` con il nodo di login. Il comando materializza direttamente `time_dataset/` nel percorso atteso dal job. Per inviare gli esperimenti:
+
+```bash
+cd /hpc/home/clmlnz/federated-rnn-cesnet-flwr
+sbatch esperimenti_copernico.sh
+```
+
+`esperimenti_copernico.sh` attiva Conda, esporta `CESNET_DATA_ROOT`, `FEDRNN_OFFLINE=1` e `PYTHONUNBUFFERED=1`. Pertanto ogni rigenerazione degli shard fatta da `tools/esperimenti.sh` è offline; il job si ferma subito se manca il manifest `.fedrnn-cesnet-ready.json`.
 
 Gli iperparametri si cambiano in `pyproject.toml` oppure da linea di comando:
 
