@@ -30,8 +30,8 @@ prepara_dati() {
     python prepare_data.py "${prepare_data_args[@]}" "$@"
 }
 
-R=1   # round per le run normali
-N=1   # quante volte ripetere ogni configurazione
+R=25   # round per le run normali
+N=5  # quante volte ripetere ogni configurazione
 
 esegui() {
     echo "==> $*"
