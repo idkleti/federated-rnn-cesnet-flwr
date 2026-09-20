@@ -85,8 +85,11 @@ python prepare_data.py --mini-dataset 500          # stesso insieme bilanciato d
 
 Servono a misurare quanto del divario dipende dalla forma della federazione (vedi **[RISULTATI.md](RISULTATI.md)**).
 
-**Se la simulazione viene interrotta per esaurimento di memoria**, alza `num-cpus` in `pyproject.toml`.
-I valori attuali sono tarati su una macchina con 16 core e 7.4 GB di RAM.
+**Se la simulazione viene interrotta per esaurimento di memoria**, aumenta
+`client-resources-num-cpus` oppure `client-resources-num-gpus` nel valore di
+`--federation-config` in `tools/esperimenti.sh`: sono risorse per ClientApp e
+quindi riducono il numero di client concorrenti. Con Flower 1.32, questi campi
+non vanno messi in `pyproject.toml` e non usano il prefisso legacy `options.`.
 
 **Se la simulazione viene interrotta e non viene mostrato alcun errore in console**, killare tutti i processi di flower e riavviare la simulazione.
 

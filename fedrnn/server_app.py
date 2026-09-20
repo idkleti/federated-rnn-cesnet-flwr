@@ -467,6 +467,10 @@ def main(grid: Grid, context: Context) -> None:
         }
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
+    log.info("Output della run: %s", cfg.OUTPUT_ROOT.resolve())
+    salva_storico(completo=False)
+    log.info("Storico iniziale salvato in %s", history_path)
+
     
     
     # Callback invocato dopo l'aggregazione della validation client-side. Seleziona

@@ -21,7 +21,7 @@ app = ClientApp()
 # DIVISIONE DATI
 # client e shard sono collegati tramite il partition-id (0 - num-partition-1) assegnato da flwr ad ogni SuperNode
 
-# prima di proseguire viene verificato che il numero di SuperNodes in pyproject.toml e numero shard coincidano per evitare che
+# prima di proseguire viene verificato che il numero di SuperNode della simulazione e numero shard coincidano per evitare che
 # o i file non vengano trovati (più SuperNode che shard) o il dataset non sia completamente utilizzato (più shard che SuperNode)
 
 def _partition_id(context: Context) -> int:
@@ -33,7 +33,8 @@ def _partition_id(context: Context) -> int:
         raise RuntimeError(
             f"La federazione ha {num_partitions} SuperNode ma in {cfg.SHARD_ROOT} "
             f"ci sono {meta['num_partitions']} shard. Porta "
-            f"options.num-supernodes in pyproject.toml a {meta['num_partitions']}, "
+            f"num-supernodes nella configurazione della simulazione a "
+            f"{meta['num_partitions']}, "
             "oppure rigenera gli shard con prepare_data.py."
         )
     return partition_id

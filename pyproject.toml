@@ -67,42 +67,12 @@ proximal-mu = 0.1
 
 
 # -- SIMULAZIONE DELLA FEDERAZIONE --
-
-# num-supernodes = 69 perchè corrisponde al numero di subnet istituzionali con almeno 10 indirizzi etichettati.
-#   Si può modificare con --min-subnet-size. Se i valori non coincidono, la ClientApp si ferma con un errore esplicito per evitare che una
-#   parte del dataset resti inutilizzata.
-
-# Su questa macchina (16 core, 7,4 GB di RAM, RTX 5060 con 8 GB VRAM) e num-cpus = 8 girano due client per volta.
-# NOTA: Ray (motore di calcolo distribuito per simulare l'infrastruttura federated) uccide un worker quando si supera il 95% di utilizzo.
-#   8 client insieme (default di Ray, 2 core l'uno)  ~0,7 GB l'uno  -> 7,06 GB, ucciso
-#   4 client insieme (4 core l'uno)                  ~1,4 GB l'uno  -> 7,11 GB, ucciso
-#   2 client insieme (8 core l'uno)                                 -> quello che usiamo
-
-# num-gpus = 0.5 per avere due client concorrenti
-
-# Alla prima esecuzione di questo codice, flwr lancia un warning ed esegue l'automigrazione (con creazione del file di configurazione)
-
-
-
-#######################################################################
-# CONFIGURATION MIGRATION NOTICE:
 #
-# What was previously called "federation config" for SuperLink
-# connections in pyproject.toml has been renamed and moved.
+# Flower 1.32 non legge piu' le impostazioni della Simulation Runtime da
+# pyproject.toml. Nel job Copernico vengono fornite per run da
+# tools/esperimenti.sh con --federation-config:
+#   num-supernodes=69 client-resources-num-cpus=11 client-resources-num-gpus=0.5
 #
-# These settings are now **SuperLink connection configuration**
-# and are defined in the Flower configuration file.
-#
-# The entries below are commented out intentionally and are kept
-# only as a migration reference.
-#
-# Docs: https://flower.ai/docs/framework/ref-flower-configuration.html
-#######################################################################
-
-# [tool.flwr.federations]
-# default = "local-simulation"
-
-# [tool.flwr.federations.local-simulation]
-# options.num-supernodes = 69
-# options.backend.client-resources.num-cpus = 4
-# options.backend.client-resources.num-gpus = 0.2
+# I 69 SuperNode corrispondono alle subnet istituzionali con almeno 10 indirizzi
+# etichettati. Il valore deve coincidere con meta.json degli shard, altrimenti la
+# ClientApp termina esplicitamente per evitare dati inutilizzati.

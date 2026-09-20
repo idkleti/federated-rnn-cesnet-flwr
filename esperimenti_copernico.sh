@@ -26,12 +26,31 @@ module load cuda/12.2
 PROJECT_ROOT=/hpc/home/clmlnz/federated-rnn-cesnet-flwr
 cd "$PROJECT_ROOT"
 
+# Imposta la directory di output
+export FEDRNN_OUTPUT_ROOT="$PROJECT_ROOT/outputs"
+mkdir -p "$FEDRNN_OUTPUT_ROOT"
+#ne faccio anche sopra per sicurezza
+mkdir -p /hpc/home/clmlnz/outputs
+echo "FEDRNN_OUTPUT_ROOT=$FEDRNN_OUTPUT_ROOT"
+echo "Output directory: $(readlink -f "$FEDRNN_OUTPUT_ROOT")"
+
+# Ogni job usa uno stato Flower separato fuori dal repository: evita conflitti
+# SQLite senza far includere le app generate nelle scansioni successive.
+export FLWR_HOME="$HOME/.flwr-${SLURM_JOB_ID:-manual}"
+export FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1
+mkdir -p "$FLWR_HOME"
+echo "FLWR_HOME=$FLWR_HOME"
+
+
 # Il dataset è stato trasferito in precedenza da una macchina con Internet.
 # FEDRNN_OFFLINE fa sì che ogni rigenerazione degli shard in esperimenti.sh
 # rifiuti download impliciti.
 export CESNET_DATA_ROOT="$PROJECT_ROOT/time_dataset"
 export FEDRNN_OFFLINE=1
 export PYTHONUNBUFFERED=1
+# Il nodo di calcolo non ha accesso a PyPI: usa le dipendenze gia' presenti
+# nell'ambiente Conda invece di creare un runtime Flower con uv sync.
+export FLWR_DISABLE_RUNTIME_DEPENDENCY_INSTALLATION=1
 
 if [[ ! -f "$CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" ]]; then
     echo "Dataset offline non pronto: manca $CESNET_DATA_ROOT/.fedrnn-cesnet-ready.json" >&2

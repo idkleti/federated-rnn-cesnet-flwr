@@ -21,7 +21,7 @@
 #       all'altro, e l'idea è la stessa di Zhao et al. 2018 in "Federated Learning with Non-IID Data"
 
 
-# lo script alla fine stampa il numero di options.num-supernodes da inserire in pyproject.toml
+# lo script alla fine stampa il valore da passare a Flower come num-supernodes
 
 # il test set del server non cambia
 
@@ -548,11 +548,10 @@ def print_summary(summary: dict, modalita: str) -> None:
             f"    {name:<12} {total:>7,}   client che non ne hanno nemmeno uno: {missing}"
         )
 
-    # la riga da mettere in pyproject.toml per supernodes
+    # Il valore da passare alla Simulation Runtime di Flower.
     print(
-        f"\n  Metti questa riga in pyproject.toml, sezione "
-        f"[tool.flwr.federations.local-simulation]:\n"
-        f"      options.num-supernodes = {n}"
+        f"\n  Avvia Flower con:\n"
+        f"      --federation-config \"num-supernodes={n}\""
     )
 
 
@@ -884,8 +883,8 @@ def main(argv: list[str] | None = None) -> int:
             f"date identiche a tutti e {len(parts)} i client"
         )
     print(
-        "Ricordati che options.num-supernodes in pyproject.toml deve valere "
-        f"{len(parts)}."
+        "Ricordati che num-supernodes nella configurazione della simulazione "
+        f"deve valere {len(parts)}."
     )
     return 0
 

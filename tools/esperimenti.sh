@@ -30,17 +30,24 @@ prepara_dati() {
     python prepare_data.py "${prepare_data_args[@]}" "$@"
 }
 
-R=50   # round per le run normali
-N=25   # quante volte ripetere ogni configurazione
+R=1   # round per le run normali
+N=1   # quante volte ripetere ogni configurazione
 
 esegui() {
     echo "==> $*"
     for i in $(seq 1 $N); do
         printf '  [%2d/%2d] %s  ' "$i" "$N" "$(date +%H:%M:%S)"
-        if ! output=$(flwr run . --run-config "$*" --stream 2>&1); then
+        # Flower 1.32 usa i nomi della CLI per la configurazione della
+        # simulazione: il vecchio prefisso `options.` non e' piu' valido.
+        # 22 CPU SLURM / 11 CPU e 1 GPU / 0.5 GPU = al massimo due client
+        # concorrenti, mentre tutti i 69 SuperNode restano disponibili.
+        if ! output=$(flwr run . \
+            --federation-config "num-supernodes=69 client-resources-num-cpus=11 client-resources-num-gpus=0.5" \
+            --run-config "$*" --stream 2>&1); then
             printf '%s\n' "$output" >&2
             return 1
         fi
+        printf '%s\n' "$output"
         printf '%s\n' "$output" | grep -oE "checkpoint selezionato: [0-9.]+" | tail -1 || true
     done
 }
