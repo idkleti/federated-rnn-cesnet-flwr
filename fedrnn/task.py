@@ -90,6 +90,7 @@ def local_train(
     weight_decay: float,
     class_weights: torch.Tensor,
     device: torch.device,
+    optimizer_name: str = "adam",
     max_grad_norm: float = 1.0,
     proximal_mu: float = 0.0,
 ) -> dict[str, float]:
@@ -98,7 +99,19 @@ def local_train(
     model.train()
 
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if optimizer_name == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=lr, weight_decay=weight_decay
+        )
+    elif optimizer_name == "sgd":
+        # FedNova in fedrnn.strategies usa la forma con SGD senza momentum.
+        optimizer = torch.optim.SGD(
+            model.parameters(), lr=lr, weight_decay=weight_decay, momentum=0.0
+        )
+    else:
+        raise ValueError(
+            f"Ottimizzatore locale {optimizer_name!r} non supportato: usa 'adam' o 'sgd'."
+        )
 
     # proximal_mu di Fedprox ha bisogno dei pesi globali con cui il round è iniziato 
     # mentre per le altre strategie non lo richiedono

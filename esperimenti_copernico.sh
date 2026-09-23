@@ -60,7 +60,19 @@ fi
 
 echo "Current working directory: $(pwd) - Running on $(hostname)"
 
-# Esegui lo script Python
-bash tools/esperimenti.sh
+# Per retrocompatibilita' senza argomenti esegue la suite storica. Per le nuove
+# baseline: sbatch esperimenti_copernico.sh tools/esperimenti_baseline.sh
+# server-side optimizer: sbatch esperimenti_copernico.sh tools/esperimenti_serveropt.sh
+EXPERIMENT_SCRIPT="${1:-tools/esperimenti.sh}"
+case "$EXPERIMENT_SCRIPT" in
+    tools/esperimenti.sh|tools/esperimenti_baseline.sh|tools/esperimenti_serveropt.sh) ;;
+    *)
+        echo "Script esperimenti non consentito: $EXPERIMENT_SCRIPT" >&2
+        echo "Valori ammessi: tools/esperimenti.sh, tools/esperimenti_baseline.sh, tools/esperimenti_serveropt.sh" >&2
+        exit 2
+        ;;
+esac
+echo "Suite esperimenti: $EXPERIMENT_SCRIPT"
+bash "$EXPERIMENT_SCRIPT"
 
 echo "Job finished on $(date)"

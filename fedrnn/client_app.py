@@ -13,6 +13,7 @@ from flwr.clientapp import ClientApp
 
 from fedrnn import config as cfg
 from fedrnn.data import build_client_loaders, client_training_statistics, load_meta
+from fedrnn.strategies import TRAIN_CLASS_COUNTS_KEY
 from fedrnn.task import DeviceRNN, evaluate as evaluate_fn, flatten_confusion
 from fedrnn.task import local_train, pick_device
 
@@ -130,6 +131,7 @@ def train(msg: Message, context: Context) -> Message:
         weight_decay=float(context.run_config["weight-decay"]),
         class_weights=class_weights,
         device=device,
+        optimizer_name=str(context.run_config["local-optimizer"]),
         proximal_mu=float(conf.get("proximal-mu", 0.0)),
     )
 
@@ -138,6 +140,14 @@ def train(msg: Message, context: Context) -> Message:
         "train_loss": stats["train_loss"],
         "num_batches": stats["num_batches"],
         "num-examples": float(len(y_train)),
+        # Identificatore anonimo e stabile dello shard. Il server lo salva solo
+        # per costruire distribuzioni/heatmap di loss, mai insieme ai dati.
+        "client-id": float(partition_id),
+        # Necessario solo a ClassAwareFedAvg: sono conteggi dell'insieme di
+        # training (la validation locale è già stata esclusa da y_train).
+        TRAIN_CLASS_COUNTS_KEY: [
+            float((y_train == class_idx).sum()) for class_idx in range(cfg.NUM_CLASSES)
+        ],
         "server-round": float(server_round),
         "lr": lr_round,
     }

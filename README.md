@@ -72,7 +72,26 @@ Gli iperparametri si cambiano in `pyproject.toml` oppure da linea di comando:
 ```bash
 flwr run . --run-config "num-server-rounds=100 strategy=\"fedadam\""
 flwr run . --run-config "strategy=\"fedprox\" proximal-mu=0.8"    # la configurazione migliore
+flwr run . --run-config "strategy=\"fednova\" local-optimizer=\"sgd\""
+flwr run . --run-config "strategy=\"classaware\""
 ```
+
+`fednova` e `classaware` sono baseline aggiuntive implementate nel progetto per
+Flower 1.32: la prima normalizza per il numero di batch locali con SGD senza
+momentum, la seconda dà la
+stessa massa aggregata alle classi presenti nel round. Per eseguirle con la
+stessa pipeline e nella stessa cartella `outputs/`:
+
+```bash
+# Default: 50 round e 25 ripetizioni per baseline.
+bash tools/esperimenti_baseline.sh
+
+# Solo controllo rapido, da sottomettere comunque con SLURM sul cluster.
+R=1 N=1 bash tools/esperimenti_baseline.sh
+```
+
+Su Copernico, la suite storica rimane il default; per le nuove baseline invia
+invece `sbatch esperimenti_copernico.sh tools/esperimenti_baseline.sh`.
 
 Il modo in cui gli indirizzi vengono divisi fra i client si sceglie invece in `prepare_data.py`:
 

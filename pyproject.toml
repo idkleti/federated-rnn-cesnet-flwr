@@ -48,11 +48,15 @@ local-epochs = 2
 learning-rate = 0.000692
 weight-decay = 0.01
 batch-size = 128
+# Le baseline esistenti usano Adam. FedNova richiede esplicitamente SGD senza
+# momentum e lo imposta soltanto nel suo script dedicato.
+local-optimizer = "adam"
 
 # Il learning rate cala di questo fattore 0.97 a ogni round, quindi l'ultimo passo vale il 22% del primo. 
 lr-decay = 0.97
 
-# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam, fedyogi)
+# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam, fedyogi,
+# fedavgm, fedadagrad, fednova, classaware)
 strategy = "fedavg"
 
 # Quanto il server modifica i pesi del modello globale quando riceve aggiornamenti dai client
@@ -60,6 +64,12 @@ strategy = "fedavg"
 # DEFAULT: 0.1 con macro-f1 0.5947 mentre 0.01 con macro-f1 0.5915 
 # CONCLUSIONE: nessuna differenza con oscillazione FedAdam
 server-learning-rate = 0.01
+
+# Momentum server-side di FedAvgM. La suite dedicata usa il valore standard 0.9.
+server-momentum = 0.9
+
+# Stabilizzatore nel denominatore di FedAdagrad. La suite dedicata lascia 0.001.
+server-tau = 0.001
 
 # Controlla quanto i modelli dei client devono rimanere vicini al modello globale
 # aggiungendo un termine di penalizzazione alla funzione di perdita

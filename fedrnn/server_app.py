@@ -21,10 +21,19 @@ from flwr.app import (
 )
 
 from flwr.serverapp import Grid, ServerApp
-from flwr.serverapp.strategy import FedAdam, FedAvg, FedProx, FedYogi, Strategy
+from flwr.serverapp.strategy import (
+    FedAdagrad,
+    FedAdam,
+    FedAvg,
+    FedAvgM,
+    FedProx,
+    FedYogi,
+    Strategy,
+)
 
 from fedrnn import config as cfg
 from fedrnn.data import build_server_test_loader, load_meta, statistics_to_mean_std
+from fedrnn.strategies import ClassAwareFedAvg, FedNova
 from fedrnn.task import (
     DeviceRNN,
     balanced_class_weights,
@@ -85,14 +94,21 @@ def wait_for_nodes(
 # FedAvg fa una media pesata degli aggiornamenti locali (niente memoria tra round e altro)
 # FedAdam sostituisce la media semplice con un passo lato server tenendo le medie mobili degli aggiornamenti tra round
 # FedProx utilizza la media di FedAvg e aggiunge alla perdita locale un termine che penalizza l'allontanarsi dai pesi con cui il round è iniziato
+# FedNova normalizza il delta di ogni client per il numero di batch locali.
+# ClassAwareFedAvg ripartisce il peso dell'aggregazione equamente fra le classi.
+# FedAvgM applica momentum al server; FedAdagrad adatta il passo lato server.
 def build_strategy(
     name: str,
     *,
     fraction_train: float,
     fraction_evaluate: float,
+    learning_rate: float,
     server_learning_rate: float,
+    server_momentum: float,
+    server_tau: float,
     proximal_mu: float,
     train_sink: dict,
+    client_train_sink: dict,
     evaluate_sink: dict,
 ) -> Strategy:
     # costruzione della strategia richiesta con aggregatori di metriche
@@ -102,7 +118,11 @@ def build_strategy(
         "fraction_train": fraction_train,
         "fraction_evaluate": fraction_evaluate,
         "weighted_by_key": WEIGHT_KEY,
-        "train_metrics_aggr_fn": partial(aggregate_train_metrics, sink=train_sink),
+        "train_metrics_aggr_fn": partial(
+            aggregate_train_metrics,
+            sink=train_sink,
+            client_sink=client_train_sink,
+        ),
         "evaluate_metrics_aggr_fn": partial(
             aggregate_evaluate_metrics, sink=evaluate_sink
         ),
@@ -121,10 +141,27 @@ def build_strategy(
     if chiave == "fedyogi":
         # come FedAdam, ma il passo del server non può crescere di colpo e non reagisce tanto alle run anomale
         return FedYogi(**comuni, eta=server_learning_rate)
+    if chiave == "fedavgm":
+        return FedAvgM(
+            **comuni,
+            server_learning_rate=server_learning_rate,
+            server_momentum=server_momentum,
+        )
+    if chiave == "fedadagrad":
+        return FedAdagrad(
+            **comuni,
+            eta=server_learning_rate,
+            eta_l=learning_rate,
+            tau=server_tau,
+        )
+    if chiave == "fednova":
+        return FedNova(**comuni)
+    if chiave in ("classaware", "class-aware"):
+        return ClassAwareFedAvg(**comuni)
 
     raise ValueError(
         f"Strategia {name!r} non riconosciuta. Valori ammessi: "
-        "fedavg, fedprox, fedadam, fedyogi."
+        "fedavg, fedprox, fedadam, fedyogi, fedavgm, fedadagrad, fednova, classaware."
     )
 
 # Round di statistiche
@@ -271,6 +308,7 @@ def aggregate_train_metrics(
     weight_key: str = WEIGHT_KEY,
     *,
     sink: dict | None = None,
+    client_sink: dict | None = None,
 ) -> MetricRecord:
     # media pesata della perdita di addestramento perchè durante il training i client riportano la loss (che è una media)
     total_weight = 0.0
@@ -278,6 +316,7 @@ def aggregate_train_metrics(
     total_batches = 0.0
     server_round = 0
     n_clients = 0
+    local_metrics: list[dict[str, float]] = []
 
     for record in records:
         metrics = _single_metric_record(record)
@@ -289,6 +328,15 @@ def aggregate_train_metrics(
         weighted_loss += weight * float(metrics.get("train_loss", 0.0))
         total_batches += float(metrics.get("num_batches", 0.0))
         server_round = max(server_round, int(metrics.get("server-round", 0)))
+        # `client-id` e' il partition-id anonimo, non il node ID assegnato dal
+        # runtime Flower. Le vecchie run senza questo campo restano leggibili.
+        if "client-id" in metrics:
+            local_metrics.append({
+                "client_id": float(metrics["client-id"]),
+                "train_loss": float(metrics.get("train_loss", 0.0)),
+                "num_examples": weight,
+                "num_batches": float(metrics.get("num_batches", 0.0)),
+            })
 
     out = {
         "train_loss": weighted_loss / total_weight if total_weight else 0.0,
@@ -305,6 +353,8 @@ def aggregate_train_metrics(
     )
     if sink is not None:
         sink[str(server_round)] = dict(out)
+    if client_sink is not None and local_metrics:
+        client_sink[str(server_round)] = local_metrics
     return MetricRecord(out)
 
 
@@ -325,7 +375,15 @@ def main(grid: Grid, context: Context) -> None:
     lr_decay = float(run["lr-decay"])
     strategy_name = str(run["strategy"])
     server_lr = float(run["server-learning-rate"])
+    server_momentum = float(run["server-momentum"])
+    server_tau = float(run["server-tau"])
     proximal_mu = float(run["proximal-mu"])
+    local_optimizer = str(run["local-optimizer"]).strip().lower()
+    if strategy_name.strip().lower() == "fednova" and local_optimizer != "sgd":
+        raise ValueError(
+            "FedNova richiede local-optimizer=\"sgd\" (senza momentum): "
+            "la normalizzazione per num_batches non e' valida con Adam."
+        )
 
     meta = load_meta()
     num_partitions = int(meta["num_partitions"])
@@ -396,6 +454,9 @@ def main(grid: Grid, context: Context) -> None:
     # dato che strategy.start salva le metriche solamente alla fine della run, per evitare che non vengano salvate causa problemi esterni,
     # uso dei dizionari per tenere traccia delle metriche round per round
     history_train: dict[str, dict] = {}
+    # Solo per le nuove run: una voce per client partecipante e per round.
+    # Non contiene dati o identificativi di rete, ma il partition-id anonimo.
+    history_client_train: dict[str, list[dict[str, float]]] = {}
     history_fed_eval: dict[str, dict] = {}
     # Il test non entra nel ciclo di selezione: viene eseguito una sola volta,
     # dopo che la validation federata ha scelto il checkpoint.
@@ -410,6 +471,8 @@ def main(grid: Grid, context: Context) -> None:
         f"{f'-md{mini_dataset}' if mini_dataset else ''}"
         f"_ft{fraction_train:g}_lrd{lr_decay:g}"
         f"{f'_mu{proximal_mu:g}' if strategy_name == 'fedprox' else ''}"
+        f"{f'_mom{server_momentum:g}' if strategy_name == 'fedavgm' else ''}"
+        f"{f'_eta{server_lr:g}_tau{server_tau:g}' if strategy_name == 'fedadagrad' else ''}"
         f"_{num_partitions}c_{num_rounds}r"
     )
     history_path = cfg.OUTPUT_ROOT / f"history_{tag}_{stamp}.json"
@@ -428,9 +491,22 @@ def main(grid: Grid, context: Context) -> None:
                 "strategy": strategy_name,
                 "lr_decay": lr_decay,
                 "server_learning_rate": (
-                    server_lr if strategy_name in ("fedadam", "fedyogi") else None
+                    server_lr
+                    if strategy_name in ("fedadam", "fedyogi", "fedavgm", "fedadagrad")
+                    else None
                 ),
+                "server_momentum": server_momentum if strategy_name == "fedavgm" else None,
+                "server_tau": server_tau if strategy_name == "fedadagrad" else None,
                 "proximal_mu": proximal_mu if strategy_name == "fedprox" else None,
+                "aggregation": (
+                    "local-step-normalized (FedNova, a_i=num_batches)"
+                    if strategy_name == "fednova"
+                    else (
+                        "equal class mass among selected clients (ClassAwareFedAvg)"
+                        if strategy_name in ("classaware", "class-aware")
+                        else "standard"
+                    )
+                ),
                 "num_rounds": num_rounds,
                 "num_partitions": num_partitions,
                 "fraction_train": fraction_train,
@@ -439,6 +515,7 @@ def main(grid: Grid, context: Context) -> None:
                 "learning_rate": lr,
                 "weight_decay": float(run["weight-decay"]),
                 "batch_size": int(run["batch-size"]),
+                "local_optimizer": local_optimizer,
                 "device": str(device),
                 "elapsed_sec": time.time() - t0,
                 "selected_round": best["round"],
@@ -460,6 +537,7 @@ def main(grid: Grid, context: Context) -> None:
             "class_counts": [float(v) for v in class_counts],
             "class_weights": [float(v) for v in class_weights],
             "train_metrics": history_train,
+            "client_train_metrics": history_client_train,
             "federated_eval_metrics": history_fed_eval,
             # Campo separato: il test non e' una serie temporale per scegliere
             # round o configurazioni a posteriori.
@@ -507,9 +585,13 @@ def main(grid: Grid, context: Context) -> None:
         strategy_name,
         fraction_train=fraction_train,
         fraction_evaluate=fraction_evaluate,
+        learning_rate=lr,
         server_learning_rate=server_lr,
+        server_momentum=server_momentum,
+        server_tau=server_tau,
         proximal_mu=proximal_mu,
         train_sink=history_train,
+        client_train_sink=history_client_train,
         evaluate_sink=history_fed_eval,
     )
 

@@ -37,6 +37,48 @@ COLORI = {
     "server": "#55A868",
 }
 
+# ---------------------------------------------------------------------------
+# Aspetto delle figure
+#
+# Modifica solo questo blocco per adattare le figure al template del paper.
+# Le dimensioni sono in pollici (width, height) e i font in punti tipografici.
+# Per una figura a due colonne, molti template usano una larghezza di 6.5--7 in;
+# per una colonna, usa circa 3.3--3.5 in e riduci le dimensioni dei font insieme.
+PLOT_CONFIG = {
+    "dpi": 300,
+    "base_font_size": 12,
+    "tick_font_size": 11,
+    "label_font_size": 13,
+    "title_font_size": 15,
+    "legend_font_size": 10.5,
+    "annotation_font_size": 10.5,
+    "curve_figsize": (10.5, 6.0),
+    "curve_legend_columns": 2,
+    "curve_legend_y": -0.25,
+    "curve_bottom_margin": 0.34,
+    "comparison_width": 10.0,
+    "comparison_row_height": 0.76,
+    "comparison_base_height": 2.6,
+    "time_width": 10.0,
+    "time_row_height": 0.62,
+    "time_base_height": 2.4,
+    "local_loss_figsize": (10.5, 6.0),
+    "heatmap_panel_width": 5.4,
+    "heatmap_panel_height": 3.8,
+    "grid_alpha": 0.30,
+    "iid_color": "#E17C05",
+    "non_iid_color": "#4C72B0",
+}
+
+plt.rcParams.update({
+    "font.size": PLOT_CONFIG["base_font_size"],
+    "axes.labelsize": PLOT_CONFIG["label_font_size"],
+    "axes.titlesize": PLOT_CONFIG["title_font_size"],
+    "xtick.labelsize": PLOT_CONFIG["tick_font_size"],
+    "ytick.labelsize": PLOT_CONFIG["tick_font_size"],
+    "legend.fontsize": PLOT_CONFIG["legend_font_size"],
+})
+
 
 # lettura delle history degli esperimenti
 
@@ -81,6 +123,8 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
             n_round,
             run.get("server_learning_rate"),
             run.get("proximal_mu"),
+            run.get("server_momentum"),
+            run.get("server_tau"),
         )
         gruppi[chiave].append(h)
     return gruppi
@@ -88,10 +132,27 @@ def carica_storici(cartella: Path) -> dict[tuple, list[dict]]:
 
 # come si chiama una partizione nelle legende dei grafici
 PARTITION_LABELS = {
-    "subnet": "natural subnet partition",
-    "random": "randomized IID reference",
-    "random-sizes": "randomized, natural client sizes",
+    "subnet": "non-IID",
+    "random": "IID",
+    "random-sizes": "IID (sizes)",
 }
+
+STRATEGY_LABELS = {
+    "fedavg": "FedAvg",
+    "fedprox": "FedProx",
+    "fedadam": "FedAdam",
+    "fedyogi": "FedYogi",
+    "fedavgm": "FedAvgM",
+    "fedadagrad": "FedAdagrad",
+    "fednova": "FedNova",
+    "classaware": "CA-FedAvg",
+    "class-aware": "CA-FedAvg",
+}
+
+
+def is_iid(chiave: tuple) -> bool:
+    """Le due partizioni randomizzate sono le baseline IID."""
+    return chiave[1] in {"random", "random-sizes"}
 
 
 def selected_validation_macro_f1(history: dict) -> float:
@@ -116,24 +177,39 @@ def iid_reference_configuration(groups: dict[tuple, list[dict]]) -> tuple | None
 
 
 def etichetta(chiave: tuple) -> str:
-    strategia, partizione, ribilanciamento, mini_dataset, ft, decay, n_round, server_lr, mu = chiave
-    testo = f"{strategia}, {PARTITION_LABELS.get(partizione, partizione)}"
+    (
+        strategia,
+        partizione,
+        ribilanciamento,
+        mini_dataset,
+        ft,
+        decay,
+        n_round,
+        server_lr,
+        mu,
+        server_momentum,
+        server_tau,
+    ) = chiave
+    parti = [
+        STRATEGY_LABELS.get(strategia, strategia),
+        PARTITION_LABELS.get(partizione, partizione),
+        f"f={ft:g}",
+    ]
     if ribilanciamento:
-        testo += f" +{ribilanciamento} net-device samples"
+        parti.append(f"RB={ribilanciamento}")
     if mini_dataset:
-        testo += f", shared set: {mini_dataset}/class"
-    testo += f", participation {ft:g}"
-    if decay != 1.0:
-        testo += f", LR decay {decay:g}"
-    if n_round != 50:
-        testo += f", {n_round} rounds"
+        parti.append(f"shared={mini_dataset}")
     # compare solo per FedAdam
     if server_lr is not None and server_lr != 0.01:
-        testo += f", eta {server_lr:g}"
+        parti.append(f"eta={server_lr:g}")
     # compare solo per FedProx
     if mu is not None:
-        testo += f", mu {mu:g}"
-    return testo
+        parti.append(f"mu={mu:g}")
+    if strategia == "fedavgm" and server_momentum is not None:
+        parti.append(f"m={server_momentum:g}")
+    # Il numero di round e lr-decay restano nello storico JSON, ma non nella
+    # label: rendono la legenda lunga senza distinguere la baseline scelta.
+    return " · ".join(parti)
 
 
 def serie_macro_f1(h: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -168,7 +244,7 @@ def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
 
 def _salva(fig, percorso: Path) -> None:
     percorso.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(percorso, dpi=150, bbox_inches="tight")
+    fig.savefig(percorso, dpi=PLOT_CONFIG["dpi"], bbox_inches="tight")
     plt.close(fig)
     print("  wrote", percorso.name)
 
@@ -186,7 +262,7 @@ def media_mobile(valori: np.ndarray, finestra: int = 5) -> np.ndarray:
     return fuori
 
 def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 5.5))
+    fig, ax = plt.subplots(figsize=PLOT_CONFIG["curve_figsize"])
     iid_key = iid_reference_configuration(gruppi)
 
     # Draw the IID reference last so it remains visible when lines overlap.
@@ -200,17 +276,14 @@ def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
         rounds = serie_macro_f1(histories[0])[0]
         mean_curve = curves.mean(axis=0)
         is_iid_reference = key == iid_key
-        label = etichetta(key)
-        if is_iid_reference:
-            label = f"IID reference — {label}"
         line, = ax.plot(
             rounds,
             media_mobile(mean_curve),
             linewidth=3.2 if is_iid_reference else 2.2,
             linestyle="--" if is_iid_reference else "-",
-            color="#E17C05" if is_iid_reference else None,
+            color=PLOT_CONFIG["iid_color"] if is_iid_reference else None,
             zorder=4 if is_iid_reference else 2,
-            label=f"{label} (n={len(histories)})",
+            label=etichetta(key),
         )
         ax.plot(
             rounds,
@@ -224,13 +297,21 @@ def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
 
     ax.axhline(BASELINE_MACRO_F1, color="black", linestyle="--", linewidth=1.2)
     ax.text(1, BASELINE_MACRO_F1 + 0.012,
-            f"Centralized RNN ({BASELINE_MACRO_F1:.4f})", fontsize=9)
+            f"Centralized RNN ({BASELINE_MACRO_F1:.4f})",
+            fontsize=PLOT_CONFIG["annotation_font_size"])
     ax.set_xlabel("communication round")
     ax.set_ylabel("federated validation macro-F1")
     ax.set_title("Federated validation across communication rounds")
     ax.set_ylim(0, 0.85)
-    ax.grid(alpha=0.3)
-    ax.legend(fontsize=8.5, loc="lower right")
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"])
+    # Legenda fuori dall'area dei dati: non copre le curve a F1 elevata.
+    ax.legend(
+        fontsize=PLOT_CONFIG["legend_font_size"],
+        loc="upper center",
+        bbox_to_anchor=(0.5, PLOT_CONFIG["curve_legend_y"]),
+        ncol=PLOT_CONFIG["curve_legend_columns"],
+    )
+    fig.subplots_adjust(bottom=PLOT_CONFIG["curve_bottom_margin"])
     _salva(fig, destinazione / "01_curve_macro_f1.png")
 
 
@@ -241,7 +322,6 @@ def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
 def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     # One bar per configuration. The test is evaluated once per replicate after
     # checkpoint selection on validation.
-    iid_key = iid_reference_configuration(gruppi)
     entries = []
     for key in sorted(gruppi):
         values = np.asarray([macro_f1_selezionata(history) for history in gruppi[key]])
@@ -256,10 +336,20 @@ def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> Non
     entries.sort(key=lambda entry: entry[2])
     labels = [entry[1] for entry in entries]
     y = np.arange(len(entries))
-    colors = ["#E17C05" if entry[0] == iid_key else "#4C72B0" for entry in entries]
-    hatches = ["//" if entry[0] == iid_key else None for entry in entries]
+    # Tutte le partizioni randomizzate sono IID, non soltanto la migliore.
+    colors = [
+        PLOT_CONFIG["iid_color"] if is_iid(entry[0]) else PLOT_CONFIG["non_iid_color"]
+        for entry in entries
+    ]
+    hatches = ["//" if is_iid(entry[0]) else None for entry in entries]
 
-    fig, ax = plt.subplots(figsize=(9.5, 0.7 * len(entries) + 2.4))
+    fig, ax = plt.subplots(
+        figsize=(
+            PLOT_CONFIG["comparison_width"],
+            PLOT_CONFIG["comparison_row_height"] * len(entries)
+            + PLOT_CONFIG["comparison_base_height"],
+        )
+    )
     bars = ax.barh(y, [entry[2] for entry in entries], color=colors, edgecolor="black",
                    height=0.55, xerr=[entry[3] for entry in entries], capsize=3)
     for bar, hatch in zip(bars, hatches):
@@ -267,25 +357,236 @@ def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> Non
 
     for i, entry in enumerate(entries):
         ax.text(entry[2] - 0.012, i, f"{entry[2]:.4f}", va="center", ha="right",
-                fontsize=9.5, color="white", fontweight="bold")
+                fontsize=PLOT_CONFIG["annotation_font_size"], color="white", fontweight="bold")
 
     ax.axvline(BASELINE_MACRO_F1, color="black", linestyle="--", linewidth=1.3)
     ax.text(BASELINE_MACRO_F1 - 0.01, len(entries) - 0.4,
             f"Centralized RNN\n{BASELINE_MACRO_F1:.4f}",
-            fontsize=9, ha="right", va="top")
+            fontsize=PLOT_CONFIG["annotation_font_size"], ha="right", va="top")
     ax.set_yticks(y)
-    ax.set_yticklabels(labels, fontsize=9.5)
+    ax.set_yticklabels(labels, fontsize=PLOT_CONFIG["tick_font_size"])
     ax.set_xlabel("server test macro-F1")
     ax.set_title("Performance of validation-selected checkpoints")
     ax.set_xlim(0, 0.85)
     ax.set_ylim(-0.7, len(entries) - 0.3)
-    ax.grid(alpha=0.3, axis="x")
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="x")
     legend_items = [
-        Patch(facecolor="#4C72B0", edgecolor="black", label="natural or experimental partition"),
-        Patch(facecolor="#E17C05", edgecolor="black", hatch="//", label="randomized IID reference"),
+        Patch(facecolor=PLOT_CONFIG["non_iid_color"], edgecolor="black", label="non-IID"),
+        Patch(facecolor=PLOT_CONFIG["iid_color"], edgecolor="black", hatch="//", label="IID"),
     ]
-    ax.legend(handles=legend_items, fontsize=8.5, loc="lower right")
+    ax.legend(handles=legend_items, fontsize=PLOT_CONFIG["legend_font_size"], loc="lower right")
     _salva(fig, destinazione / "02_confronto_strategie.png")
+
+
+# FIGURA 7: TEMPI DI ADDESTRAMENTO
+# Tempo end-to-end misurato dal ServerApp: statistiche federate, round e test
+# finale del checkpoint scelto. Le barre includono la deviazione fra repliche.
+def figura_tempi(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    entries = []
+    for key in sorted(gruppi):
+        seconds = np.asarray([
+            float(history["run"]["elapsed_sec"])
+            for history in gruppi[key]
+            if history["run"].get("elapsed_sec") is not None
+        ])
+        if not len(seconds):
+            continue
+        entries.append((
+            key,
+            etichetta(key),
+            float(seconds.mean() / 60),
+            float(seconds.std(ddof=1) / 60) if len(seconds) > 1 else 0.0,
+        ))
+
+    if not entries:
+        return
+    entries.sort(key=lambda entry: entry[2])
+    y = np.arange(len(entries))
+    colors = [
+        PLOT_CONFIG["iid_color"] if is_iid(entry[0]) else PLOT_CONFIG["non_iid_color"]
+        for entry in entries
+    ]
+    fig, ax = plt.subplots(
+        figsize=(
+            PLOT_CONFIG["time_width"],
+            PLOT_CONFIG["time_row_height"] * len(entries) + PLOT_CONFIG["time_base_height"],
+        )
+    )
+    bars = ax.barh(
+        y,
+        [entry[2] for entry in entries],
+        xerr=[entry[3] for entry in entries],
+        color=colors,
+        edgecolor="black",
+        height=0.55,
+        capsize=3,
+    )
+    for bar, entry in zip(bars, entries):
+        ax.text(
+            bar.get_width() + max(entry[3], 0.02),
+            bar.get_y() + bar.get_height() / 2,
+            f"{entry[2]:.2f} min",
+            va="center",
+            fontsize=PLOT_CONFIG["annotation_font_size"],
+        )
+    ax.set_yticks(y)
+    ax.set_yticklabels([entry[1] for entry in entries], fontsize=PLOT_CONFIG["tick_font_size"])
+    ax.set_xlabel("end-to-end training time (minutes)")
+    ax.set_title("Training time per configuration")
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="x")
+    ax.set_axisbelow(True)
+    ax.set_xlim(left=0)
+    _salva(fig, destinazione / "07_tempi_addestramento.png")
+
+
+# FIGURE 8 e 9: DISPERSIONE DELLA LOSS LOCALE
+# Le tracce client_train_metrics vengono scritte dalle nuove run. Non sono
+# disponibili negli storici antecedenti a questa modifica.
+def configurazioni_confronto_local_loss(
+    gruppi: dict[tuple, list[dict]],
+) -> list[tuple]:
+    """Configurazioni non-IID comparabili: stessa pipeline, diversa strategia."""
+    keys = []
+    for key in sorted(gruppi):
+        strategy, partition, rebalance, mini_dataset, fraction, decay, *_ = key
+        if (
+            partition != "subnet"
+            or rebalance != 0
+            or mini_dataset != 0
+            or fraction != 0.5
+            or decay != 0.97
+        ):
+            continue
+        # Per FedProx la configurazione di riferimento resta quella di default.
+        if strategy == "fedprox" and key[8] != 0.1:
+            continue
+        if any(history.get("client_train_metrics") for history in gruppi[key]):
+            keys.append(key)
+    return keys
+
+
+def loss_locali_per_round(histories: list[dict]) -> dict[int, list[float]]:
+    """Unisce le loss dei client campionati in tutte le repliche."""
+    values: dict[int, list[float]] = defaultdict(list)
+    for history in histories:
+        for round_text, metrics in history.get("client_train_metrics", {}).items():
+            for metric in metrics:
+                loss = metric.get("train_loss")
+                if loss is not None and np.isfinite(float(loss)):
+                    values[int(round_text)].append(float(loss))
+    return values
+
+
+def figura_loss_locali_iqr(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """Media e fascia 25--75% delle loss dei client partecipanti."""
+    keys = configurazioni_confronto_local_loss(gruppi)
+    if not keys:
+        print("  no client-local loss traces: skipping local-loss figures")
+        return
+
+    fig, ax = plt.subplots(figsize=PLOT_CONFIG["local_loss_figsize"])
+    for key in keys:
+        per_round = loss_locali_per_round(gruppi[key])
+        rounds = np.asarray(sorted(per_round))
+        means = np.asarray([np.mean(per_round[round_]) for round_ in rounds])
+        q25 = np.asarray([np.percentile(per_round[round_], 25) for round_ in rounds])
+        q75 = np.asarray([np.percentile(per_round[round_], 75) for round_ in rounds])
+        line, = ax.plot(rounds, means, linewidth=2.0, label=etichetta(key))
+        ax.fill_between(rounds, q25, q75, color=line.get_color(), alpha=0.16)
+
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("local training loss")
+    ax.set_title("Mean local loss with interquartile band")
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"])
+    ax.legend(fontsize=PLOT_CONFIG["legend_font_size"], ncol=2)
+    _salva(fig, destinazione / "08_loss_locali_iqr.png")
+
+
+def figura_heatmap_loss_clienti(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """Una heatmap per strategia, con righe ordinate per numerosita' client."""
+    keys = configurazioni_confronto_local_loss(gruppi)
+    if not keys:
+        return
+
+    all_losses = []
+    matrices: list[tuple[tuple, np.ndarray, np.ndarray]] = []
+    for key in keys:
+        histories = gruppi[key]
+        per_client_round: dict[tuple[int, int], list[float]] = defaultdict(list)
+        max_round = 0
+        max_client = -1
+        for history in histories:
+            for round_text, metrics in history.get("client_train_metrics", {}).items():
+                round_ = int(round_text)
+                max_round = max(max_round, round_)
+                for metric in metrics:
+                    if "client_id" not in metric or "train_loss" not in metric:
+                        continue
+                    client_id = int(metric["client_id"])
+                    loss = float(metric["train_loss"])
+                    if np.isfinite(loss):
+                        per_client_round[(client_id, round_)].append(loss)
+                        all_losses.append(loss)
+                        max_client = max(max_client, client_id)
+
+        summary = histories[0].get("partition", {}).get("summary", {})
+        counts = np.asarray(summary.get("per_client_class_counts", []), dtype=float)
+        client_sizes = counts.sum(axis=1) if counts.ndim == 2 else np.array([])
+        n_clients = max(len(client_sizes), max_client + 1)
+        if n_clients == 0 or max_round == 0:
+            continue
+        matrix = np.full((n_clients, max_round), np.nan)
+        for (client_id, round_), losses in per_client_round.items():
+            matrix[client_id, round_ - 1] = float(np.mean(losses))
+        if len(client_sizes) == n_clients:
+            order = np.argsort(-client_sizes)
+        else:
+            order = np.arange(n_clients)
+        matrices.append((key, matrix[order], order))
+
+    if not matrices or not all_losses:
+        return
+    vmin = 0.0
+    vmax = max(float(np.percentile(all_losses, 95)), 1e-6)
+    ncols = 2 if len(matrices) > 1 else 1
+    nrows = int(np.ceil(len(matrices) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(
+            ncols * PLOT_CONFIG["heatmap_panel_width"],
+            nrows * PLOT_CONFIG["heatmap_panel_height"],
+        ),
+        squeeze=False,
+    )
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_bad("#E6E6E6")  # client non campionato in quel round
+    image = None
+    for ax, (key, matrix, _) in zip(axes.flat, matrices):
+        image = ax.imshow(
+            np.ma.masked_invalid(matrix),
+            aspect="auto",
+            interpolation="nearest",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+        )
+        n_clients, n_rounds = matrix.shape
+        ax.set_title(etichetta(key), fontsize=PLOT_CONFIG["annotation_font_size"])
+        ax.set_xlabel("communication round")
+        ax.set_ylabel("client rank by train samples")
+        ax.set_xticks([0, max(0, n_rounds // 2 - 1), n_rounds - 1], [1, max(1, n_rounds // 2), n_rounds])
+        ax.set_yticks([0, max(0, n_clients // 2 - 1), n_clients - 1], [1, max(1, n_clients // 2), n_clients])
+    for ax in axes.flat[len(matrices):]:
+        ax.set_visible(False)
+    if image is not None:
+        colorbar = fig.colorbar(image, ax=axes.flat[:len(matrices)], shrink=0.86)
+        colorbar.set_label("mean local training loss")
+    fig.suptitle("Client-local training loss (gray = not sampled)", fontsize=PLOT_CONFIG["title_font_size"])
+    # `tight_layout` non gestisce il colorbar condiviso; margini espliciti
+    # evitano sia sovrapposizioni sia il warning di Matplotlib.
+    fig.subplots_adjust(left=0.14, right=0.90, bottom=0.08, top=0.91, wspace=0.34, hspace=0.45)
+    _salva(fig, destinazione / "09_heatmap_loss_clienti.png")
 
 
 # FIGURA 3: F1 PER CLASSE
@@ -310,8 +611,8 @@ def figura_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> No
     ax.set_ylabel("class F1 on federated validation")
     ax.set_title(f"Per-class F1 — {etichetta(chiave)}")
     ax.set_ylim(0, 1)
-    ax.grid(alpha=0.3)
-    ax.legend()
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"])
+    ax.legend(fontsize=PLOT_CONFIG["legend_font_size"])
     _salva(fig, destinazione / "03_f1_per_classe.png")
 
 
@@ -335,7 +636,7 @@ def figura_confusione(gruppi: dict[tuple, list[dict]], destinazione: Path) -> No
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):
             ax.text(j, i, f"{cm[i, j]:.1f}\n({perc[i, j]:.0%})",
-                    ha="center", va="center", fontsize=10,
+                    ha="center", va="center", fontsize=PLOT_CONFIG["annotation_font_size"],
                     color="white" if perc[i, j] > 0.5 else "black")
 
     ax.set_xticks(range(cfg.NUM_CLASSES), cfg.CLASS_NAMES, rotation=20, ha="right")
@@ -343,7 +644,7 @@ def figura_confusione(gruppi: dict[tuple, list[dict]], destinazione: Path) -> No
     ax.set_xlabel("predicted class")
     ax.set_ylabel("true class")
     ax.set_title(f"Mean confusion matrix — {etichetta(chiave)}\n"
-                 f"mean macro-F1 {macro:.4f}", fontsize=11)
+                 f"mean macro-F1 {macro:.4f}")
     _salva(fig, destinazione / "04_matrice_confusione.png")
 
 
@@ -366,7 +667,7 @@ def figura_partizione(meta: dict, destinazione: Path) -> None:
     sx.set_xlabel("client rank, largest to smallest")
     sx.set_ylabel("IP addresses (log scale)")
     sx.set_title(f"Size of {len(totali)} clients")
-    sx.grid(alpha=0.3, axis="y")
+    sx.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="y")
 
     net = cc[ordine, idx_net]
     dx.bar(range(len(net)), net, color=COLORI["net-device"])
@@ -376,12 +677,12 @@ def figura_partizione(meta: dict, destinazione: Path) -> None:
         f"({100 * net[piu_grande] / max(net.sum(), 1):.0f}% of all net-device samples)",
         xy=(piu_grande, net[piu_grande]),
         xytext=(piu_grande + len(net) * 0.18, net[piu_grande] * 0.82),
-        fontsize=9, arrowprops=dict(arrowstyle="->", lw=1),
+        fontsize=PLOT_CONFIG["annotation_font_size"], arrowprops=dict(arrowstyle="->", lw=1),
     )
     dx.set_xlabel("client rank, same order as left panel")
     dx.set_ylabel("local net-device samples")
     dx.set_title("Location of the minority class")
-    dx.grid(alpha=0.3, axis="y")
+    dx.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="y")
 
     _salva(fig, destinazione / "05_partizione.png")
 
@@ -414,7 +715,7 @@ def figura_heatmap_label_skew(summary: dict, destinazione: Path) -> None:
     ax_size.set_ylabel("client rank by sample count")
     ax_size.set_yticks([0, n_clients // 2, n_clients - 1])
     ax_size.set_yticklabels(["1", str(n_clients // 2 + 1), str(n_clients)])
-    ax_size.grid(alpha=0.25, axis="x")
+    ax_size.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="x")
 
     image = ax_heatmap.imshow(
         heatmap_data,
@@ -451,6 +752,9 @@ def main() -> int:
 
     figura_curve(gruppi, destinazione)
     figura_confronto(gruppi, destinazione)
+    figura_tempi(gruppi, destinazione)
+    figura_loss_locali_iqr(gruppi, destinazione)
+    figura_heatmap_loss_clienti(gruppi, destinazione)
     figura_per_classe(gruppi, destinazione)
     figura_confusione(gruppi, destinazione)
 
