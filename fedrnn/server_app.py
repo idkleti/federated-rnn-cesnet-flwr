@@ -659,6 +659,6 @@ def main(grid: Grid, context: Context) -> None:
     )
     log.info("   salvato in %s", best_model_path.name)
     log.info(
-        "Riferimento: RNN centralizzata con pesi di classe, macro-F1 0.7615 "
+        "Riferimento: RNN centralizzata con pesi di classe, macro-F1 0.7355 "
         "sugli stessi 9.238 indirizzi"
     )

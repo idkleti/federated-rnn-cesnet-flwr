@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fedrnn import config as cfg 
 
 # macro f1-score del test set del modello centralizzato con cui voglio confrontarmi 
-BASELINE_MACRO_F1 = 0.7615 # appare in due figure come riferimento
+BASELINE_MACRO_F1 = 0.7355 # appare in due figure come riferimento
 
 COLORI = {
     "end-device": "#4C72B0",
