@@ -1,6 +1,6 @@
 # server app
 
-# raccolgo statistiche dati -> costruisco modello iniziale -> far girare la strategia scelta per N round valutando a ogni round sul test set a parte ->
+# raccolgo statistiche dati -> costruisco modello iniziale -> strategia ->
 # -> salva modello e storico
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ from fedrnn.strategies import ClassAwareFedAvg, FedNova
 from fedrnn.task import (
     DeviceRNN,
     balanced_class_weights,
-    evaluate,
+    evaluate_by_client,
     format_confusion,
     metrics_from_confusion,
     pick_device,
@@ -124,7 +124,8 @@ def build_strategy(
             client_sink=client_train_sink,
         ),
         "evaluate_metrics_aggr_fn": partial(
-            aggregate_evaluate_metrics, sink=evaluate_sink
+            aggregate_evaluate_metrics,
+            sink=evaluate_sink,
         ),
     }
 
@@ -378,6 +379,7 @@ def main(grid: Grid, context: Context) -> None:
     server_momentum = float(run["server-momentum"])
     server_tau = float(run["server-tau"])
     proximal_mu = float(run["proximal-mu"])
+    evaluate_central_test = bool(run["evaluate-central-test"])
     local_optimizer = str(run["local-optimizer"]).strip().lower()
     if strategy_name.strip().lower() == "fednova" and local_optimizer != "sgd":
         raise ValueError(
@@ -461,6 +463,7 @@ def main(grid: Grid, context: Context) -> None:
     # Il test non entra nel ciclo di selezione: viene eseguito una sola volta,
     # dopo che la validation federata ha scelto il checkpoint.
     selected_test_metrics: dict[str, float | list] | None = None
+    selected_test_client_metrics: list[dict[str, float]] = []
 
     cfg.OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -473,6 +476,8 @@ def main(grid: Grid, context: Context) -> None:
         f"{f'_mu{proximal_mu:g}' if strategy_name == 'fedprox' else ''}"
         f"{f'_mom{server_momentum:g}' if strategy_name == 'fedavgm' else ''}"
         f"{f'_eta{server_lr:g}_tau{server_tau:g}' if strategy_name == 'fedadagrad' else ''}"
+        f"_le{int(run['local-epochs'])}"
+        f"{'_valonly' if not evaluate_central_test else ''}"
         f"_{num_partitions}c_{num_rounds}r"
     )
     history_path = cfg.OUTPUT_ROOT / f"history_{tag}_{stamp}.json"
@@ -516,13 +521,16 @@ def main(grid: Grid, context: Context) -> None:
                 "weight_decay": float(run["weight-decay"]),
                 "batch_size": int(run["batch-size"]),
                 "local_optimizer": local_optimizer,
+                "evaluate_central_test": evaluate_central_test,
                 "device": str(device),
                 "elapsed_sec": time.time() - t0,
                 "selected_round": best["round"],
                 "selected_fed_macro_f1": best["fed_macro_f1"],
                 "completed": completo, # chi legge lo storico deve essere in grado di capire se un esperimento è stato completato o meno
                 "rounds_done": len(history_fed_eval),
-                "test_evaluation": "selected_checkpoint_once",
+                "test_evaluation": (
+                    "selected_checkpoint_once" if evaluate_central_test else "disabled"
+                ),
                 "test_evaluations": 1 if selected_test_metrics is not None else 0,
             },
             "partition": {
@@ -542,6 +550,9 @@ def main(grid: Grid, context: Context) -> None:
             # Campo separato: il test non e' una serie temporale per scegliere
             # round o configurazioni a posteriori.
             "selected_test_metrics": selected_test_metrics,
+            # Macro-F1 sul test centrale, suddiviso per subnet/client naturale.
+            # Viene popolato solo dopo la selezione del checkpoint con validation.
+            "selected_test_client_metrics": selected_test_client_metrics,
         }
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
@@ -611,30 +622,47 @@ def main(grid: Grid, context: Context) -> None:
             "essere scelto senza usare il test set."
         )
 
-    # Unica valutazione sul test, eseguita solo sul checkpoint gia' selezionato.
-    selected_model = DeviceRNN()
-    selected_model.load_state_dict(best_state_dict)
-    loader = build_server_test_loader(batch_size=256, mean=mean, std=std)
-    loss, confusion, n_samples = evaluate(
-        selected_model, loader, class_weights=class_weights, device=device
-    )
-    selected_test_metrics = {
-        **{k: float(v) for k, v in metrics_from_confusion(confusion).items()},
-        "test_loss": float(loss),
-        WEIGHT_KEY: float(n_samples),
-        "selected_round": float(best["round"]),
-        "confusion": confusion.tolist(),
-    }
-    log.info(
-        "TEST una sola volta sul checkpoint scelto dalla validation (round %d) | "
-        "macro-F1 %.4f | F1 end-device %.4f, net-device %.4f, server %.4f\n%s",
-        best["round"],
-        selected_test_metrics["macro_f1"],
-        selected_test_metrics["f1_end_device"],
-        selected_test_metrics["f1_net_device"],
-        selected_test_metrics["f1_server"],
-        format_confusion(confusion),
-    )
+    if evaluate_central_test:
+        # Unica valutazione sul test, eseguita solo sul checkpoint gia' selezionato.
+        selected_model = DeviceRNN()
+        selected_model.load_state_dict(best_state_dict)
+        loader = build_server_test_loader(batch_size=256, mean=mean, std=std)
+        loss, confusion, n_samples, client_confusions = evaluate_by_client(
+            selected_model, loader, class_weights=class_weights, device=device
+        )
+        selected_test_metrics = {
+            **{k: float(v) for k, v in metrics_from_confusion(confusion).items()},
+            "test_loss": float(loss),
+            WEIGHT_KEY: float(n_samples),
+            "selected_round": float(best["round"]),
+            "confusion": confusion.tolist(),
+        }
+        selected_test_client_metrics = [
+            {
+                "client_id": float(client_id),
+                "macro_f1": float(metrics_from_confusion(cm)["macro_f1"]),
+                "num_examples": float(cm.sum()),
+                "present_classes": float(np.count_nonzero(cm.sum(axis=1))),
+            }
+            for client_id, cm in sorted(client_confusions.items())
+        ]
+        log.info(
+            "TEST una sola volta sul checkpoint scelto dalla validation (round %d) | "
+            "macro-F1 %.4f | F1 end-device %.4f, net-device %.4f, server %.4f\n%s",
+            best["round"],
+            selected_test_metrics["macro_f1"],
+            selected_test_metrics["f1_end_device"],
+            selected_test_metrics["f1_net_device"],
+            selected_test_metrics["f1_server"],
+            format_confusion(confusion),
+        )
+    else:
+        log.info(
+            "Tuning validation-only: test centrale non caricato né valutato; "
+            "checkpoint al round %d (macro-F1 validation %.4f).",
+            best["round"],
+            best["fed_macro_f1"],
+        )
 
     # Salvataggi finali
     model_path = cfg.OUTPUT_ROOT / f"model_{tag}_{stamp}.pt"
@@ -650,13 +678,14 @@ def main(grid: Grid, context: Context) -> None:
         elapsed / 60,
         elapsed / max(num_rounds, 1),
     )
-    log.info(
-        "macro-F1 sul test, checkpoint selezionato: %.4f  (round %d, scelto con "
-        "macro-F1 validation federata %.4f)",
-        selected_test_metrics["macro_f1"],
-        best["round"],
-        best["fed_macro_f1"],
-    )
+    if selected_test_metrics is not None:
+        log.info(
+            "macro-F1 sul test, checkpoint selezionato: %.4f  (round %d, scelto con "
+            "macro-F1 validation federata %.4f)",
+            selected_test_metrics["macro_f1"],
+            best["round"],
+            best["fed_macro_f1"],
+        )
     log.info("   salvato in %s", best_model_path.name)
     log.info(
         "Riferimento: RNN centralizzata con pesi di classe, macro-F1 0.7615 "

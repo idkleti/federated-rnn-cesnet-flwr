@@ -302,5 +302,14 @@ def build_server_test_loader(
     std: np.ndarray,
 ) -> DataLoader:
     X, y, _ = load_shard(config.server_shard_path(), mean=mean, std=std)
-    ds = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
+    with np.load(config.server_shard_path()) as shard:
+        client_ids = shard.get("client_ids")
+    if client_ids is None:
+        ds = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
+    else:
+        ds = TensorDataset(
+            torch.from_numpy(X),
+            torch.from_numpy(y),
+            torch.from_numpy(np.asarray(client_ids, dtype=np.int64)),
+        )
     return DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)

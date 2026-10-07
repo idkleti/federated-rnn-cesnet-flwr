@@ -185,6 +185,50 @@ def evaluate(
     return total_loss / n_batches, confusion_matrix(true, pred), len(true)
 
 
+@torch.no_grad()
+def evaluate_by_client(
+    model: nn.Module,
+    loader: DataLoader,
+    *,
+    class_weights: torch.Tensor,
+    device: torch.device,
+) -> tuple[float, np.ndarray, int, dict[int, np.ndarray]]:
+    """Valuta il test centrale e scompone la confusion matrix per subnet.
+
+    Gli shard di test meno recenti non hanno il terzo campo client_ids: in quel
+    caso la metrica aggregata resta valida e il dizionario per-client e' vuoto.
+    """
+    model.to(device)
+    model.eval()
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    total_loss = 0.0
+    n_batches = 0
+    aggregate = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int64)
+    per_client: dict[int, np.ndarray] = {}
+
+    for batch in loader:
+        X, y = batch[0].to(device), batch[1].to(device)
+        logits = model(X)
+        total_loss += float(criterion(logits, y).item())
+        n_batches += 1
+        true = y.cpu().numpy()
+        pred = logits.argmax(dim=1).cpu().numpy()
+        aggregate += confusion_matrix(true, pred)
+        if len(batch) == 3:
+            client_ids = batch[2].cpu().numpy()
+            for client_id in np.unique(client_ids):
+                if client_id < 0:
+                    continue
+                mask = client_ids == client_id
+                cm = confusion_matrix(true[mask], pred[mask])
+                if int(client_id) in per_client:
+                    per_client[int(client_id)] += cm
+                else:
+                    per_client[int(client_id)] = cm
+
+    return total_loss / max(n_batches, 1), aggregate, int(aggregate.sum()), per_client
+
+
 # invio la matrice di confusione anzichè la f1 score perchè la f1 score si ricava dalla matrice di confusione e per ottenere la f1 score totale
 # basta effettuare il calcolo sul server una volta combinate tutte le matrici di confusione provenienti dai client
 def confusion_matrix(
