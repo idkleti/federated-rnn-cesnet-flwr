@@ -8,7 +8,7 @@ I comandi che le hanno prodotte si trovano in [`tools/esperimenti.sh`](tools/esp
 
 ## Confronti
 
-Il riferimento è la RNN centralizzata di base fornita, che ottiene **macro-F1 0.7615** sul test set.
+Il riferimento è la RNN centralizzata, addestrata 25 volte sulle stesse serie di addestramento e validazione della federazione, che ottiene in media **macro-F1 0.7355** sul test set.
 
 Il confronto viene effettuato sullo stesso test set poichè lo split avviene con lo stesso seed (111) e le stesse proporzioni, ottenendo gli stessi conteggi per classe (8,136 end-device, 218 net-device e 884 server).
 
@@ -61,7 +61,7 @@ Nel resto del documento le differenze fra configurazioni sono espresse in **x vo
 | fedadam | 0.5 | 0.97 | — | 50 | 0.5856 | 0.0587 | 9/31 |
 | fedyogi | 0.5 | 0.97 | — | 50 | 0.5782 | 0.0545 | 14/31 |
 | fedavg | 1.0 | — | — | 50 | 0.5249 | **0.0175** | **2/31** |
-| *centralizzata* | | | | | *0.7615* | | |
+| *centralizzata* | | | | | *0.7355* | | |
 
 ![confronto fra le configurazioni](outputs/figure/02_confronto_strategie.png)
 
@@ -115,11 +115,11 @@ Gli indirizzi sono sempre 82,527 e i client sempre 69.
 
 | | consegnato | min-max | divario |
 |---|---|---|---|
-| subnet, la federazione vera | 0.6101 ± 0.0299 | 0.5174-0.6515 | 0.1514 |
-| subnet + 425 net-device condivisi | 0.6141 ± 0.0227 | 0.5366-0.6499 | 0.1474 |
-| subnet + insieme condiviso 500 per classe | 0.5904 ± 0.0190 | 0.5600-0.6220 | 0.1711 |
-| **casuale a dimensioni reali** | **0.6767 ± 0.0069** | 0.6609-0.6928 | **0.0848** |
-| casuale a blocchi uguali | 0.6440 ± 0.0058 | 0.6325-0.6526 | 0.1175 |
+| subnet, la federazione vera | 0.6101 ± 0.0299 | 0.5174-0.6515 | 0.1253 |
+| subnet + 425 net-device condivisi | 0.6141 ± 0.0227 | 0.5366-0.6499 | 0.1214 |
+| subnet + insieme condiviso 500 per classe | 0.5904 ± 0.0190 | 0.5600-0.6220 | 0.1451 |
+| **casuale a dimensioni reali** | **0.6767 ± 0.0069** | 0.6609-0.6928 | **0.0588** |
+| casuale a blocchi uguali | 0.6440 ± 0.0058 | 0.6325-0.6526 | 0.0915 |
 
 Un paio di note sulla suddivisione casuale (usano gli stessi indirizzi e numero di client):
 * **casuale a blocchi uguali**: gli indirizzi vengono mescolati e divisi in 69 pezzi identici
@@ -148,9 +148,9 @@ La prima divisione dei dati migliora il risultato mentre la seconda divisione pe
 
 La spiegazione plausibile è che con pochi client grossi la media pesata di FedAvg sia dominata da aggiornamenti calcolati su molti dati, mentre 34 client da 1,200 indirizzi producono 34 aggiornamenti rumorosi da mediare fra loro.
 
-Quindi dei **0.1514** di divario rispetto al modello centralizzato, che è quello di FedAvg fissato in questa sezione:
-* **circa il 44% (0.0666)** dipende da come le classi sono distribuite fra le subnet
-* il restante **56% (0.0848)** è il costo di federare in sé, che resta anche con la partizione migliore
+Quindi dei **0.1253** di divario rispetto al modello centralizzato, che è quello di FedAvg fissato in questa sezione:
+* **circa il 53% (0.0666)** dipende da come le classi sono distribuite fra le subnet
+* il restante **47% (0.0588)** è il costo di federare in sé, che resta anche con la partizione migliore
 
 ## Prestare dati fra i client non aiuta
 
@@ -216,7 +216,7 @@ Il parametro pesa quanto un client viene penalizzato man mano che i suoi pesi si
 | **0.8** | **0.6310 ± 0.0215** | 0.0566 | 5/31 |
 | 1.0 | 0.6263 ± 0.0254 | 0.0504 | 2/31 |
 
-A mu 0.8 il modello consegnato fa **0.6310** e porta il divario col centralizzato da 0.1514 a **0.1305**, con 2.83 volte l'errore di vantaggio su FedAvg. Fra 0.8 e 1.0 si equivalgono. Contro il default 0.1 si distinguono solo 0.8 e 1.0 (2.90 e 2.32 volte l'errore), mentre 0.2 e 0.5 si fermano a 1.47 e 1.73, sotto la soglia di 2.
+A mu 0.8 il modello consegnato fa **0.6310** e porta il divario col centralizzato da 0.1253 a **0.1045**, con 2.83 volte l'errore di vantaggio su FedAvg. Fra 0.8 e 1.0 si equivalgono. Contro il default 0.1 si distinguono solo 0.8 e 1.0 (2.90 e 2.32 volte l'errore), mentre 0.2 e 0.5 si fermano a 1.47 e 1.73, sotto la soglia di 2.
 
 Il guadagno cade quasi tutto su una classe sola:
 
@@ -234,17 +234,17 @@ F1 per classe:
 
 | classe | centralizzata | subnet (fedavg) | subnet (fedprox mu 0.8) | + net-device | + condiviso | dimensioni reali |
 |---|---|---|---|---|---|---|
-| end-device | 0.9642 | 0.9423 | 0.9446 | 0.9430 | 0.8924 | 0.9449 |
-| net-device | 0.6304 | 0.4969 | 0.4881 | 0.4976 | 0.5104 | **0.5851** |
-| server | 0.6900 | 0.3911 | **0.4601** | 0.4016 | 0.3683 | **0.5000** |
+| end-device | 0.9602 | 0.9423 | 0.9446 | 0.9430 | 0.8924 | 0.9449 |
+| net-device | 0.5885 | 0.4969 | 0.4881 | 0.4976 | 0.5104 | **0.5851** |
+| server | 0.6577 | 0.3911 | **0.4601** | 0.4016 | 0.3683 | **0.5000** |
 
 Sulla federazione vera, con la configurazione consegnata (fedprox mu 0.8), il divario si distribuisce così:
 
 | classe | perdita | quota del divario |
 |---|---|---|
-| end-device | 0.0196 | 5% |
-| net-device | 0.1423 | 36% |
-| **server** | **0.2299** | **59%** |
+| end-device | 0.0155 | 5% |
+| net-device | 0.1003 | 32% |
+| **server** | **0.1976** | **63%** |
 
 La classe dei `net-device`, quella che all'apparenza sembrava il problema, **non è quella che pesa di più sul divario**, perché i server sono schiacciati da migliaia di end-device all'interno di ciascun client (nonostante i server siano presenti in 61 client di 69) e il peso di classe 3.64 non basta a farli notare. Prestare server però non risolve.
 
@@ -303,16 +303,16 @@ Gli shard vengono sovrascritti a ogni rigenerazione, quindi in `shards/` c'è se
 
 | | macro-F1 |
 |---|---|
-| RNN centralizzata baseline | 0.7615 |
+| RNN centralizzata baseline | 0.7355 |
 | RNN federata, migliore configurazione | **0.6310** |
 
 La configurazione migliore è **FedProx con proximal-mu 0.8, metà dei client per round, decadimento 0.97, cinquanta round**.
 
-Il costo del federated learning su questo problema è di **0.1305** sulla macro-f1, e si distribuisce quasi sei decimi sui `server`, poco più di un terzo sui `net-device` e quasi niente sugli end-device.
+Il costo del federated learning su questo problema è di **0.1045** sulla macro-f1, e si distribuisce poco più di sei decimi sui `server`, circa un terzo sui `net-device` e quasi niente sugli end-device.
 
 Conclusioni elencate:
 
-1. **Il divario dipende da come le classi sono distribuite, non da quanto sono grandi i client.** Sparpagliando le classi si recupera il 44% del divario di FedAvg mentre pareggiando anche le dimensioni si peggiora.
+1. **Il divario dipende da come le classi sono distribuite, non da quanto sono grandi i client.** Sparpagliando le classi si recupera il 53% del divario di FedAvg mentre pareggiando anche le dimensioni si peggiora.
 2. **I pesi di classe non bastano, e prestare dati fra i client non aiuta.** Il peso 15 assegnato ai net-device funziona dentro un client che i net-device ce li ha, e portarli a dieci in tutti i client non cambia niente. Dare a tutti lo stesso insieme bilanciato fa addirittura scendere il consegnato a 0.5904, perché quell'insieme domina i conteggi aggregati e schiaccia i pesi di classe da 15 a 1.58. Il problema non è quanti esemplari ha ciascun client, è che dentro ogni client le proporzioni fra le classi non somigliano a quelle globali.
 3. **La federazione reale è imprevedibile, non solo peggiore.** FedAvg consegna fra 0.52 e 0.65 a seconda della run, contro un intervallo di due centesimi con i dati mescolati. Con FedProx e mu=0.8 invece l'intervallo si stringe a 0.59-0.66 e la deviazione standard scende da 0.0299 a 0.0215.
 4. **Trattenere i client vicino al modello globale è la strategia più efficace fra quelle provate, mentre adattare il passo lato server non serve.** FedAdam e FedYogi stanno entrambe sotto FedAvg e sono indistinguibili fra loro. Portare `proximal-mu` da 0.1 a 0.8 vale +0.0275 sul consegnato e sposta i `server` di poco più di quattro centesimi, che è la classe su cui nessun altro intervento aveva ottenuto niente. È arrivata dopo le prime 250 esecuzioni.

@@ -17,7 +17,7 @@ La presenza dei dati di test sul server è solo per scopo "educativo" per capire
 
 | | macro-F1 |
 |---|---|
-| RNN centralizzata (progetto di partenza) | 0.7615 |
+| RNN centralizzata (stessi dati della federazione) | 0.7355 |
 | RNN federata, migliore configurazione | 0.6310 |
 
 ## Come avviarlo
@@ -138,11 +138,11 @@ outputs/               storici delle run e figure
 
 All'interno del file **[RISULTATI.md](RISULTATI.md)** si trovano **400 esecuzioni complete, 25 per ogni configurazione**, con il confronto tra strategie di aggregazione, cinque modi diversi di dividere gli indirizzi fra i client, e l'analisi di dove il modello federato peggiora rispetto a quello centralizzato.
 
-**In breve, la configurazione migliore è FedProx con proximal-mu = 0.8, fraction-train = 0.5 e lr-decay = 0.97**, con f1-score 0.6310 contro lo 0.7615 del centralizzato. Il divario è dovuto per quasi tre quinti alla classe **server** e per poco più di un terzo ai **net-device**. La differenza fra `fraction-train` 0.3 e 0.5 non esiste e il decadimento del learning rate aiuta invece di peggiorare.
+**In breve, la configurazione migliore è FedProx con proximal-mu = 0.8, fraction-train = 0.5 e lr-decay = 0.97**, con f1-score 0.6310 contro lo 0.7355 del centralizzato. Il divario è dovuto per poco più di tre quinti alla classe **server** e per circa un terzo ai **net-device**. La differenza fra `fraction-train` 0.3 e 0.5 non esiste e il decadimento del learning rate aiuta invece di peggiorare.
 
 La prova su `proximal-mu` è stata effettuata dopo le prime 250 esecuzioni, per utilizzare una strategia dedicata ai dati non-IID, cambiando il valore di mu. Portarlo da 0.1 a 0.8 sposta di quattro centesimi la F1 dei `server`.
 
-**Il risultato principale** è che il divario dipende da **come le classi sono distribuite fra i client**, e non da quanto i client sono grandi. Mescolando gli indirizzi fra i 69 client ma tenendo le dimensioni vere delle subnet si recupera il 44% del divario di FedAvg; se invece si rendono i client tutti della stessa dimensione il risultato peggiora.
+**Il risultato principale** è che il divario dipende da **come le classi sono distribuite fra i client**, e non da quanto i client sono grandi. Mescolando gli indirizzi fra i 69 client ma tenendo le dimensioni vere delle subnet si recupera il 53% del divario di FedAvg; se invece si rendono i client tutti della stessa dimensione il risultato peggiora.
 
 Da qua si deriva il perchè i `server` sono la classe più penalizzata pur essendo presenti in 61 client su 69, ovvero che non conta in quanti client una classe compare ma in che proporzione compare dentro ciascuno.
 
