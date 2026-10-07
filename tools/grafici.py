@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sys
+import csv
+import zipfile
 from collections import defaultdict
 
 from matplotlib.patches import Patch
@@ -65,10 +67,24 @@ PLOT_CONFIG = {
     "local_loss_figsize": (10.5, 6.0),
     "heatmap_panel_width": 5.4,
     "heatmap_panel_height": 3.8,
+    "heatmap_colorbar_left": 0.89,
+    "heatmap_colorbar_width": 0.022,
     "grid_alpha": 0.30,
     "iid_color": "#E17C05",
     "non_iid_color": "#4C72B0",
 }
+
+# Confronto principale per il paper: la baseline e' FedAvg IID con le stesse
+# dimensioni client della federazione reale; tutte le configurazioni della
+# partizione subnet non-IID restano visibili, compresa FedAvg non-IID.
+# In questo modo si vede sia il costo della non-IID per FedAvg sia quale
+# alternativa si avvicina di piu' al riferimento IID.
+# I CSV continuano a contenere tutte le configurazioni finali eseguite.
+PAPER_COMPARISON_ONLY = True
+PAPER_IID_REFERENCE_PARTITION = "random-sizes"
+PAPER_IID_REFERENCE_STRATEGY = "fedavg"
+PAPER_UNIFORM_FRACTION_TRAIN = 0.5
+PAPER_SHARED_MINI_DATASET = 500
 
 plt.rcParams.update({
     "font.size": PLOT_CONFIG["base_font_size"],
@@ -164,7 +180,7 @@ def iid_reference_configuration(groups: dict[tuple, list[dict]]) -> tuple | None
     """Best randomized-IID configuration according to validation only."""
     candidates = [
         key for key in groups
-        if key[1] == "random" and key[2] == 0 and key[3] == 0
+        if key[1] in {"random", "random-sizes"} and key[2] == 0 and key[3] == 0
     ]
     if not candidates:
         return None
@@ -174,6 +190,68 @@ def iid_reference_configuration(groups: dict[tuple, list[dict]]) -> tuple | None
             selected_validation_macro_f1(history) for history in groups[key]
         ])),
     )
+
+
+def gruppi_confronto_paper(
+    groups: dict[tuple, list[dict]],
+) -> dict[tuple, list[dict]]:
+    """Mantiene FedAvg IID e tutte le configurazioni della partizione non-IID."""
+    if not PAPER_COMPARISON_ONLY:
+        return groups
+
+    # Quando e' completa la suite controllata a f=0.5, preferiscila al vecchio
+    # confronto con fraction_train diversa fra strategie. Fino ad allora resta
+    # disponibile la visualizzazione delle configurazioni finali precedenti.
+    required_non_iid = {"fedavg", "fedprox", "fedyogi", "classaware"}
+    uniform_strategies = {
+        key[0]
+        for key in groups
+        if key[1] == "subnet"
+        and key[3] == 0
+        and key[4] == PAPER_UNIFORM_FRACTION_TRAIN
+    }
+    has_uniform_reference = any(
+        key[0] == PAPER_IID_REFERENCE_STRATEGY
+        and key[1] == PAPER_IID_REFERENCE_PARTITION
+        and key[3] == 0
+        and key[4] == PAPER_UNIFORM_FRACTION_TRAIN
+        for key in groups
+    )
+    has_uniform_shared = any(
+        key[0] == "fedavg"
+        and key[1] == "subnet"
+        and key[3] == PAPER_SHARED_MINI_DATASET
+        and key[4] == PAPER_UNIFORM_FRACTION_TRAIN
+        for key in groups
+    )
+    use_uniform_fraction = (
+        required_non_iid <= uniform_strategies
+        and has_uniform_reference
+        and has_uniform_shared
+    )
+
+    filtered = {
+        key: histories
+        for key, histories in groups.items()
+        if (
+            key[0] == PAPER_IID_REFERENCE_STRATEGY
+            and key[1] == PAPER_IID_REFERENCE_PARTITION
+            and (
+                not use_uniform_fraction
+                or key[4] == PAPER_UNIFORM_FRACTION_TRAIN
+            )
+        )
+        or (
+            key[1] == "subnet"
+            and (
+                not use_uniform_fraction
+                or key[4] == PAPER_UNIFORM_FRACTION_TRAIN
+            )
+        )
+    }
+    if not filtered:
+        raise RuntimeError("Nessuna configurazione disponibile per il confronto paper.")
+    return filtered
 
 
 def etichetta(chiave: tuple) -> str:
@@ -209,7 +287,10 @@ def etichetta(chiave: tuple) -> str:
         parti.append(f"m={server_momentum:g}")
     # Il numero di round e lr-decay restano nello storico JSON, ma non nella
     # label: rendono la legenda lunga senza distinguere la baseline scelta.
-    return " · ".join(parti)
+    # Il simbolo resta visibile in tutte le figure, anche in quelle che non
+    # usano colore/barre per distinguere IID e non-IID.
+    prefix = "★ " if is_iid(chiave) else ""
+    return prefix + " · ".join(parti)
 
 
 def serie_macro_f1(h: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -220,9 +301,36 @@ def serie_macro_f1(h: dict) -> tuple[np.ndarray, np.ndarray]:
     return round_, valori
 
 
+def serie_balanced_accuracy(h: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Balanced accuracy federata, calcolata dalla confusion matrix aggregata."""
+    c = h["federated_eval_metrics"]
+    round_ = np.array(sorted(int(r) for r in c))
+    valori = np.array([c[str(r)]["balanced_accuracy"] for r in round_])
+    return round_, valori
+
+
 def macro_f1_selezionata(h: dict) -> float:
     # Macro-F1 del test, valutata una volta sul checkpoint gia' scelto con validation.
     return float(h["selected_test_metrics"]["macro_f1"])
+
+
+def balanced_accuracy_selezionata(h: dict) -> float:
+    return float(h["selected_test_metrics"]["balanced_accuracy"])
+
+
+def metriche_test_medie(histories: list[dict], metriche: list[str]) -> dict[str, tuple[float, float]]:
+    """Media e deviazione standard fra repliche sul test del checkpoint scelto."""
+    out = {}
+    for metrica in metriche:
+        valori = np.asarray([
+            float(history["selected_test_metrics"].get(metrica, 0.0))
+            for history in histories
+        ])
+        out[metrica] = (
+            float(valori.mean()),
+            float(valori.std(ddof=1)) if len(valori) > 1 else 0.0,
+        )
+    return out
 
 
 def configurazione_consegnata(gruppi: dict[tuple, list[dict]]) -> tuple:
@@ -247,6 +355,21 @@ def _salva(fig, percorso: Path) -> None:
     fig.savefig(percorso, dpi=PLOT_CONFIG["dpi"], bbox_inches="tight")
     plt.close(fig)
     print("  wrote", percorso.name)
+
+
+def crea_archivio_risultati(output_root: Path) -> Path:
+    """Crea un archivio portabile con sole figure e tabelle generate."""
+    archive = output_root / "figure_tables.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for folder_name in ("figure", "tables"):
+            folder = output_root / folder_name
+            if not folder.exists():
+                continue
+            for path in sorted(folder.rglob("*")):
+                if path.is_file():
+                    zip_file.write(path, path.relative_to(output_root))
+    print("  wrote", archive.name)
+    return archive
 
 
 # FIGURA 1: CURVE DI APPRENDIMENTO
@@ -315,6 +438,54 @@ def figura_curve(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     _salva(fig, destinazione / "01_curve_macro_f1.png")
 
 
+def figura_curve_balanced_accuracy(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """Controparte della curva macro-F1 per la balanced accuracy federata."""
+    fig, ax = plt.subplots(figsize=PLOT_CONFIG["curve_figsize"])
+    iid_key = iid_reference_configuration(gruppi)
+    ordered_keys = [key for key in sorted(gruppi) if key != iid_key]
+    if iid_key is not None:
+        ordered_keys.append(iid_key)
+
+    for key in ordered_keys:
+        histories = gruppi[key]
+        curves = np.stack([serie_balanced_accuracy(history)[1] for history in histories])
+        rounds = serie_balanced_accuracy(histories[0])[0]
+        mean_curve = curves.mean(axis=0)
+        is_iid_reference = key == iid_key
+        line, = ax.plot(
+            rounds,
+            media_mobile(mean_curve),
+            linewidth=3.2 if is_iid_reference else 2.2,
+            linestyle="--" if is_iid_reference else "-",
+            color=PLOT_CONFIG["iid_color"] if is_iid_reference else None,
+            zorder=4 if is_iid_reference else 2,
+            label=etichetta(key),
+        )
+        ax.plot(
+            rounds,
+            mean_curve,
+            linewidth=1.1 if is_iid_reference else 0.9,
+            alpha=0.45 if is_iid_reference else 0.25,
+            linestyle="--" if is_iid_reference else "-",
+            color=line.get_color(),
+            zorder=3 if is_iid_reference else 1,
+        )
+
+    ax.set_xlabel("communication round")
+    ax.set_ylabel("federated validation balanced accuracy")
+    ax.set_title("Federated balanced accuracy across communication rounds")
+    ax.set_ylim(0, 1)
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"])
+    ax.legend(
+        fontsize=PLOT_CONFIG["legend_font_size"],
+        loc="upper center",
+        bbox_to_anchor=(0.5, PLOT_CONFIG["curve_legend_y"]),
+        ncol=PLOT_CONFIG["curve_legend_columns"],
+    )
+    fig.subplots_adjust(bottom=PLOT_CONFIG["curve_bottom_margin"])
+    _salva(fig, destinazione / "13_curve_balanced_accuracy.png")
+
+
 # FIGURA 2: CONFRONTO TRA STRATEGIE
 # la barra è la macro-F1 sul test del server del modello consegnato mediata sulle due esecuzioni 
 # il rombo invece è massimo ottenuto sul test durante la run, non selezionabile perché richiederebbe di guardare il test
@@ -376,6 +547,227 @@ def figura_confronto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> Non
     ]
     ax.legend(handles=legend_items, fontsize=PLOT_CONFIG["legend_font_size"], loc="lower right")
     _salva(fig, destinazione / "02_confronto_strategie.png")
+
+
+def figura_confronto_balanced_accuracy(
+    gruppi: dict[tuple, list[dict]], destinazione: Path
+) -> None:
+    """Balanced accuracy del test dei checkpoint scelti con validation."""
+    entries = []
+    for key in sorted(gruppi):
+        values = np.asarray([
+            balanced_accuracy_selezionata(history) for history in gruppi[key]
+        ])
+        entries.append((
+            key,
+            etichetta(key),
+            float(values.mean()),
+            float(values.std(ddof=1)) if len(values) > 1 else 0.0,
+        ))
+    entries.sort(key=lambda entry: entry[2])
+    y = np.arange(len(entries))
+    colors = [
+        PLOT_CONFIG["iid_color"] if is_iid(entry[0]) else PLOT_CONFIG["non_iid_color"]
+        for entry in entries
+    ]
+    fig, ax = plt.subplots(
+        figsize=(
+            PLOT_CONFIG["comparison_width"],
+            PLOT_CONFIG["comparison_row_height"] * len(entries)
+            + PLOT_CONFIG["comparison_base_height"],
+        )
+    )
+    bars = ax.barh(
+        y,
+        [entry[2] for entry in entries],
+        xerr=[entry[3] for entry in entries],
+        color=colors,
+        edgecolor="black",
+        height=0.55,
+        capsize=3,
+    )
+    for bar, entry in zip(bars, entries):
+        if is_iid(entry[0]):
+            bar.set_hatch("//")
+        ax.text(
+            entry[2] - 0.012,
+            bar.get_y() + bar.get_height() / 2,
+            f"{entry[2]:.4f}",
+            va="center",
+            ha="right",
+            fontsize=PLOT_CONFIG["annotation_font_size"],
+            color="white",
+            fontweight="bold",
+        )
+    ax.set_yticks(y)
+    ax.set_yticklabels([entry[1] for entry in entries], fontsize=PLOT_CONFIG["tick_font_size"])
+    ax.set_xlabel("server test balanced accuracy")
+    ax.set_title("Balanced accuracy of validation-selected checkpoints")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.7, len(entries) - 0.3)
+    ax.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="x")
+    ax.legend(
+        handles=[
+            Patch(facecolor=PLOT_CONFIG["non_iid_color"], edgecolor="black", label="non-IID"),
+            Patch(facecolor=PLOT_CONFIG["iid_color"], edgecolor="black", hatch="//", label="IID"),
+        ],
+        fontsize=PLOT_CONFIG["legend_font_size"],
+        loc="lower right",
+    )
+    _salva(fig, destinazione / "14_confronto_balanced_accuracy.png")
+
+
+# FIGURE 11 e 12: METRICHE COMPLEMENTARI SUL TEST CENTRALE
+GLOBAL_TEST_METRICS = ["macro_f1", "balanced_accuracy", "weighted_f1"]
+CLASS_TEST_METRICS = [
+    "f1_end_device", "f1_net_device", "f1_server",
+    "recall_end_device", "recall_net_device", "recall_server",
+]
+
+
+def _test_metric_entries(gruppi: dict[tuple, list[dict]]) -> list[tuple]:
+    entries = []
+    for key in gruppi:
+        summary = metriche_test_medie(
+            gruppi[key], GLOBAL_TEST_METRICS + CLASS_TEST_METRICS
+        )
+        entries.append((key, etichetta(key), summary))
+    return sorted(entries, key=lambda entry: entry[2]["macro_f1"][0], reverse=True)
+
+
+def _annotated_heatmap(ax, values: np.ndarray, labels: list[str], columns: list[str], title: str):
+    image = ax.imshow(values, cmap="viridis", vmin=0, vmax=1, aspect="auto")
+    ax.set_title(title)
+    ax.set_yticks(range(len(labels)), labels, fontsize=PLOT_CONFIG["tick_font_size"])
+    ax.set_xticks(range(len(columns)), columns, rotation=20, ha="right")
+    for row in range(values.shape[0]):
+        for col in range(values.shape[1]):
+            value = values[row, col]
+            ax.text(
+                col,
+                row,
+                f"{value:.3f}",
+                ha="center",
+                va="center",
+                fontsize=PLOT_CONFIG["annotation_font_size"] - 1.5,
+                color="white" if value < 0.55 else "black",
+            )
+    return image
+
+
+def figura_metriche_globali(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """Macro-F1, balanced accuracy e weighted F1 per ogni configurazione."""
+    entries = _test_metric_entries(gruppi)
+    if not entries:
+        return
+    values = np.asarray([
+        [entry[2][metric][0] for metric in GLOBAL_TEST_METRICS]
+        for entry in entries
+    ])
+    fig, ax = plt.subplots(figsize=(9.5, 0.58 * len(entries) + 2.6))
+    image = _annotated_heatmap(
+        ax,
+        values,
+        [entry[1] for entry in entries],
+        [
+            "Macro-F1\n(equal class F1 weight)",
+            "Balanced accuracy\n(mean class recall)",
+            "Weighted F1\n(sample-weighted)",
+        ],
+        "Central-test score overview — higher is better",
+    )
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.03)
+    colorbar.set_label("central-test score (0–1)")
+    _salva(fig, destinazione / "11_metriche_globali_test.png")
+
+
+def figura_metriche_per_classe(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """F1 e recall per classe: rende visibile l'effetto dello sbilanciamento."""
+    entries = _test_metric_entries(gruppi)
+    if not entries:
+        return
+    labels = [entry[1] for entry in entries]
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(14.5, 0.58 * len(entries) + 2.6),
+        sharey=True,
+    )
+    f1_values = np.asarray([
+        [entry[2][f"f1_{name.replace('-', '_')}"][0] for name in cfg.CLASS_NAMES]
+        for entry in entries
+    ])
+    recall_values = np.asarray([
+        [entry[2][f"recall_{name.replace('-', '_')}"][0] for name in cfg.CLASS_NAMES]
+        for entry in entries
+    ])
+    image = _annotated_heatmap(
+        axes[0], f1_values, labels, list(cfg.CLASS_NAMES), "Per-class F1"
+    )
+    _annotated_heatmap(
+        axes[1], recall_values, labels, list(cfg.CLASS_NAMES), "Per-class recall"
+    )
+    colorbar = fig.colorbar(image, ax=axes, fraction=0.025, pad=0.03)
+    colorbar.set_label("score")
+    _salva(fig, destinazione / "12_metriche_per_classe_test.png")
+
+
+def esporta_tabelle(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    """Esporta risultati leggibili da fogli di calcolo senza perdere i dettagli."""
+    destinazione.mkdir(parents=True, exist_ok=True)
+    metriche = GLOBAL_TEST_METRICS + CLASS_TEST_METRICS
+    configuration_rows = []
+    class_rows = []
+    for key, label, summary in _test_metric_entries(gruppi):
+        (
+            strategy, partition, rebalance, mini_dataset, fraction, decay,
+            rounds, server_lr, proximal_mu, server_momentum, server_tau,
+        ) = key
+        row = {
+            "label": label,
+            "strategy": strategy,
+            "partition": partition,
+            "fraction_train": fraction,
+            "lr_decay": decay,
+            "num_rounds": rounds,
+            "rebalance_net_device": rebalance,
+            "mini_dataset": mini_dataset,
+            "server_learning_rate": server_lr,
+            "proximal_mu": proximal_mu,
+            "server_momentum": server_momentum,
+            "server_tau": server_tau,
+            "replicates": len(gruppi[key]),
+        }
+        for metric in metriche:
+            row[f"{metric}_mean"] = summary[metric][0]
+            row[f"{metric}_std"] = summary[metric][1]
+        elapsed = np.asarray([float(h["run"].get("elapsed_sec", 0.0)) / 60 for h in gruppi[key]])
+        row["elapsed_min_mean"] = float(elapsed.mean())
+        row["elapsed_min_std"] = float(elapsed.std(ddof=1)) if len(elapsed) > 1 else 0.0
+        configuration_rows.append(row)
+        for class_name in cfg.CLASS_NAMES:
+            suffix = class_name.replace("-", "_")
+            class_rows.append({
+                "label": label,
+                "strategy": strategy,
+                "class": class_name,
+                "replicates": len(gruppi[key]),
+                "f1_mean": summary[f"f1_{suffix}"][0],
+                "f1_std": summary[f"f1_{suffix}"][1],
+                "recall_mean": summary[f"recall_{suffix}"][0],
+                "recall_std": summary[f"recall_{suffix}"][1],
+            })
+
+    for filename, rows in (
+        ("test_metrics_by_configuration.csv", configuration_rows),
+        ("test_metrics_by_class.csv", class_rows),
+    ):
+        path = destinazione / filename
+        with path.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+        print("  wrote", path.name)
 
 
 # FIGURA 7: TEMPI DI ADDESTRAMENTO
@@ -579,14 +971,119 @@ def figura_heatmap_loss_clienti(gruppi: dict[tuple, list[dict]], destinazione: P
         ax.set_yticks([0, max(0, n_clients // 2 - 1), n_clients - 1], [1, max(1, n_clients // 2), n_clients])
     for ax in axes.flat[len(matrices):]:
         ax.set_visible(False)
-    if image is not None:
-        colorbar = fig.colorbar(image, ax=axes.flat[:len(matrices)], shrink=0.86)
-        colorbar.set_label("mean local training loss")
     fig.suptitle("Client-local training loss (gray = not sampled)", fontsize=PLOT_CONFIG["title_font_size"])
-    # `tight_layout` non gestisce il colorbar condiviso; margini espliciti
-    # evitano sia sovrapposizioni sia il warning di Matplotlib.
-    fig.subplots_adjust(left=0.14, right=0.90, bottom=0.08, top=0.91, wspace=0.34, hspace=0.45)
+    # Il colorbar ha un proprio asse, fuori dalla griglia: Matplotlib non deve
+    # ridimensionare i pannelli e non può sovrapporlo all'ultima heatmap.
+    fig.subplots_adjust(left=0.14, right=0.82, bottom=0.08, top=0.91, wspace=0.34, hspace=0.45)
+    if image is not None:
+        colorbar_ax = fig.add_axes([
+            PLOT_CONFIG["heatmap_colorbar_left"],
+            0.17,
+            PLOT_CONFIG["heatmap_colorbar_width"],
+            0.66,
+        ])
+        colorbar = fig.colorbar(image, cax=colorbar_ax)
+        colorbar.set_label("mean local training loss")
     _salva(fig, destinazione / "09_heatmap_loss_clienti.png")
+
+
+# FIGURA 10: MACRO-F1 DEL TEST CENTRALE, SUDDIVISA PER CLIENT/SUBNET
+def configurazioni_confronto_test_client_f1(
+    gruppi: dict[tuple, list[dict]],
+) -> list[tuple]:
+    """Tutte le configurazioni del confronto con metriche test per-client."""
+    keys = []
+    for key in sorted(gruppi):
+        # Le history precedenti alla nuova strumentazione non hanno questa lista.
+        if any(history.get("selected_test_client_metrics") for history in gruppi[key]):
+            keys.append(key)
+    return keys
+
+
+def figura_heatmap_macro_f1_test_clienti(
+    gruppi: dict[tuple, list[dict]], destinazione: Path
+) -> None:
+    """Righe=client, colonne=repliche, colore=macro-F1 sul test centrale."""
+    keys = configurazioni_confronto_test_client_f1(gruppi)
+    if not keys:
+        print("  no per-client test metrics: skipping test macro-F1 heatmap")
+        return
+
+    matrices: list[tuple[tuple, np.ndarray]] = []
+    for key in keys:
+        # Le repliche precedenti alla strumentazione non hanno il test diviso
+        # per client: non diventano colonne grigie, vengono semplicemente
+        # escluse da questa figura specifica.
+        histories = [
+            history for history in gruppi[key]
+            if history.get("selected_test_client_metrics")
+        ]
+        if not histories:
+            continue
+        summary = histories[0].get("partition", {}).get("summary", {})
+        counts = np.asarray(summary.get("per_client_class_counts", []), dtype=float)
+        if counts.ndim != 2:
+            continue
+        n_clients = len(counts)
+        matrix = np.full((n_clients, len(histories)), np.nan)
+        for replicate, history in enumerate(histories):
+            for metric in history.get("selected_test_client_metrics", []):
+                client_id = int(metric.get("client_id", -1))
+                macro_f1 = metric.get("macro_f1")
+                if 0 <= client_id < n_clients and macro_f1 is not None:
+                    matrix[client_id, replicate] = float(macro_f1)
+        order = np.argsort(-counts.sum(axis=1))
+        matrices.append((key, matrix[order]))
+
+    if not matrices:
+        return
+    ncols = 2 if len(matrices) > 1 else 1
+    nrows = int(np.ceil(len(matrices) / ncols))
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(
+            ncols * PLOT_CONFIG["heatmap_panel_width"],
+            nrows * PLOT_CONFIG["heatmap_panel_height"] + 0.65,
+        ),
+        squeeze=False,
+    )
+    cmap = plt.get_cmap("viridis").copy()
+    cmap.set_bad("#E6E6E6")  # subnet assente dal test centrale
+    image = None
+    for ax, (key, matrix) in zip(axes.flat, matrices):
+        image = ax.imshow(
+            np.ma.masked_invalid(matrix),
+            aspect="auto",
+            interpolation="nearest",
+            cmap=cmap,
+            vmin=0,
+            vmax=1,
+        )
+        n_clients, n_replicates = matrix.shape
+        ax.set_title(etichetta(key), fontsize=PLOT_CONFIG["annotation_font_size"])
+        ax.set_xlabel("test replicate")
+        ax.set_ylabel("client rank by train samples")
+        ax.set_xticks(range(n_replicates), range(1, n_replicates + 1))
+        ax.set_yticks([0, max(0, n_clients // 2 - 1), n_clients - 1], [1, max(1, n_clients // 2), n_clients])
+    for ax in axes.flat[len(matrices):]:
+        ax.set_visible(False)
+    fig.suptitle(
+        "Per-client macro-F1 on the central test set (gray = no test samples)",
+        fontsize=PLOT_CONFIG["title_font_size"],
+        y=0.985,
+    )
+    fig.subplots_adjust(left=0.14, right=0.82, bottom=0.07, top=0.91, wspace=0.34, hspace=0.52)
+    if image is not None:
+        colorbar_ax = fig.add_axes([
+            PLOT_CONFIG["heatmap_colorbar_left"],
+            0.17,
+            PLOT_CONFIG["heatmap_colorbar_width"],
+            0.66,
+        ])
+        colorbar = fig.colorbar(image, cax=colorbar_ax)
+        colorbar.set_label("macro-F1 on central test")
+    _salva(fig, destinazione / "10_heatmap_macro_f1_test_clienti.png")
 
 
 # FIGURA 3: F1 PER CLASSE
@@ -739,24 +1236,36 @@ def figura_heatmap_label_skew(summary: dict, destinazione: Path) -> None:
 
 
 def main() -> int:
-    gruppi = carica_storici(cfg.OUTPUT_ROOT)
+    gruppi_completi = carica_storici(cfg.OUTPUT_ROOT)
     destinazione = cfg.OUTPUT_ROOT / "figure"
+    tabelle = cfg.OUTPUT_ROOT / "tables"
 
-    if not gruppi:
+    if not gruppi_completi:
         print(f"No protocol-compliant completed run in {cfg.OUTPUT_ROOT}. Run `flwr run .` first.")
         return 1
 
-    print(f"Configurations found: {len(gruppi)}")
+    gruppi = gruppi_confronto_paper(gruppi_completi)
+
+    print(
+        f"Configurations in figures: {len(gruppi)} "
+        f"(of {len(gruppi_completi)} complete final configurations)"
+    )
     for chiave in sorted(gruppi):
         print(f"  {etichetta(chiave)} — {len(gruppi[chiave])} runs")
 
     figura_curve(gruppi, destinazione)
+    figura_curve_balanced_accuracy(gruppi, destinazione)
     figura_confronto(gruppi, destinazione)
+    figura_confronto_balanced_accuracy(gruppi, destinazione)
+    figura_metriche_globali(gruppi, destinazione)
+    figura_metriche_per_classe(gruppi, destinazione)
     figura_tempi(gruppi, destinazione)
     figura_loss_locali_iqr(gruppi, destinazione)
     figura_heatmap_loss_clienti(gruppi, destinazione)
+    figura_heatmap_macro_f1_test_clienti(gruppi, destinazione)
     figura_per_classe(gruppi, destinazione)
     figura_confusione(gruppi, destinazione)
+    esporta_tabelle(gruppi_completi, tabelle)
 
     # The selected configuration always supplies the partition statistics,
     # unlike shards/meta.json, which may not be present after cleanup.
@@ -775,7 +1284,11 @@ def main() -> int:
     else:
         print(f"  {percorso_meta} is missing: skipping partition figure")
 
+    archivio = crea_archivio_risultati(cfg.OUTPUT_ROOT)
+
     print(f"\nFigures in {destinazione}")
+    print(f"Tables in {tabelle}")
+    print(f"Archive: {archivio}")
     return 0
 
 

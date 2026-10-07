@@ -63,12 +63,17 @@ echo "Current working directory: $(pwd) - Running on $(hostname)"
 # Per retrocompatibilita' senza argomenti esegue la suite storica. Per le nuove
 # baseline: sbatch esperimenti_copernico.sh tools/esperimenti_baseline.sh
 # server-side optimizer: sbatch esperimenti_copernico.sh tools/esperimenti_serveropt.sh
+# validation-only tuning: sbatch esperimenti_copernico.sh tools/esperimenti_tuning_validation.sh
+# final test evaluation: sbatch esperimenti_copernico.sh tools/esperimenti_finali.sh
+# IID complement to final evaluation: sbatch esperimenti_copernico.sh tools/esperimenti_finali_iid.sh
+# shared-dataset final evaluation: sbatch esperimenti_copernico.sh tools/esperimenti_finali_condiviso.sh
+# controlled final comparison at f=0.5: sbatch esperimenti_copernico.sh tools/esperimenti_finali_f50.sh
 EXPERIMENT_SCRIPT="${1:-tools/esperimenti.sh}"
 case "$EXPERIMENT_SCRIPT" in
-    tools/esperimenti.sh|tools/esperimenti_baseline.sh|tools/esperimenti_serveropt.sh) ;;
+    tools/esperimenti.sh|tools/esperimenti_baseline.sh|tools/esperimenti_serveropt.sh|tools/esperimenti_tuning_validation.sh|tools/esperimenti_finali.sh|tools/esperimenti_finali_iid.sh|tools/esperimenti_finali_condiviso.sh|tools/esperimenti_finali_f50.sh) ;;
     *)
         echo "Script esperimenti non consentito: $EXPERIMENT_SCRIPT" >&2
-        echo "Valori ammessi: tools/esperimenti.sh, tools/esperimenti_baseline.sh, tools/esperimenti_serveropt.sh" >&2
+        echo "Valori ammessi: tools/esperimenti.sh, tools/esperimenti_baseline.sh, tools/esperimenti_serveropt.sh, tools/esperimenti_finali.sh, tools/esperimenti_tuning_validation.sh, tools/esperimenti_finali_iid.sh, tools/esperimenti_finali_condiviso.sh, tools/esperimenti_finali_f50.sh" >&2
         exit 2
         ;;
 esac

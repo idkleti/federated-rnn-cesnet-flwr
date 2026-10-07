@@ -450,13 +450,24 @@ def load_raw_series(
     X = np.transpose(X, (0, 2, 1)).astype(np.float32, copy=False)
     return np.ascontiguousarray(X), got_ids
 
-def write_shard(path: Path, X: np.ndarray, y: np.ndarray, ts_ids: np.ndarray) -> None:
-    np.savez(
-        path,
-        X=X.astype(np.float32, copy=False),
-        y=y.astype(np.int64, copy=False),
-        ts_ids=np.asarray(ts_ids),
-    )
+def write_shard(
+    path: Path,
+    X: np.ndarray,
+    y: np.ndarray,
+    ts_ids: np.ndarray,
+    *,
+    test_client_ids: np.ndarray | None = None,
+) -> None:
+    arrays = {
+        "X": X.astype(np.float32, copy=False),
+        "y": y.astype(np.int64, copy=False),
+        "ts_ids": np.asarray(ts_ids),
+    }
+    # Solo nello shard di test: subnet/client naturale di origine (0--68),
+    # oppure -1 se quel gruppo non e' un client federato valido.
+    if test_client_ids is not None:
+        arrays["client_ids"] = np.asarray(test_client_ids, dtype=np.int64)
+    np.savez(path, **arrays)
 
 
 # pulisco la cartella prima di rigenerare gli shard
@@ -481,10 +492,11 @@ def server_test_valido(test_ids: np.ndarray) -> bool:
     try:
         with np.load(percorso) as data:
             presenti = np.asarray(data["ts_ids"])
+            client_ids = np.asarray(data["client_ids"])
     except Exception:
         # file troncato o illeggibile: meglio riscriverlo
         return False
-    return len(presenti) == len(test_ids) and bool(
+    return len(presenti) == len(test_ids) and len(client_ids) == len(test_ids) and bool(
         np.array_equal(np.sort(presenti), np.sort(np.asarray(test_ids)))
     )
 
@@ -724,6 +736,12 @@ def main(argv: list[str] | None = None) -> int:
     parts = partition_by_group(groups.to_numpy())
     log.info("Subnet con almeno un indirizzo etichettato: %d", len(parts))
     parts = apply_min_subnet_size(parts, args.min_subnet_size)
+    # Mappa test->client costruita prima di eventuali partizioni randomizzate:
+    # e' significativa soltanto per la federazione naturale per subnet.
+    natural_group_to_client = {
+        groups.iloc[int(part[0])]: client_id
+        for client_id, part in enumerate(parts)
+    }
 
     # la divisione per subnet viene semre calcolata perchè le latre divisioni si basano su di essa (num client e num indirizzi)
     if args.partition != "subnet":
@@ -831,7 +849,18 @@ def main(argv: list[str] | None = None) -> int:
         X_test, got_ids = load_raw_series(dataset, test_ids, workers=WORKERS)
         position = {int(t): i for i, t in enumerate(got_ids)}
         rows = np.array([position[int(t)] for t in test_ids])
-        write_shard(cfg.server_shard_path(), X_test[rows], test_y, test_ids)
+        test_groups = group_of_ts.reindex(test_ids)
+        test_client_ids = np.asarray(
+            [natural_group_to_client.get(group, -1) for group in test_groups],
+            dtype=np.int64,
+        )
+        write_shard(
+            cfg.server_shard_path(),
+            X_test[rows],
+            test_y,
+            test_ids,
+            test_client_ids=test_client_ids,
+        )
         del X_test
 
 
