@@ -5,7 +5,7 @@
 # per avviare:
 #       python tools/grafici.py
 
-# legge outputs/history_*.json e shards/meta.json e scrive in outputs/figure/
+# legge outputs/history_*.json, outputs/centralizzato/*.json e shards/meta.json e scrive in outputs/figure/
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import zipfile
 from collections import defaultdict
 
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 from pathlib import Path
 
 import matplotlib
@@ -1235,6 +1236,151 @@ def figura_heatmap_label_skew(summary: dict, destinazione: Path) -> None:
     _salva(fig, destinazione / "06_label_skew_heatmap.png")
 
 
+# FIGURE 15, 16 e 17: VERSIONI COMPATTE PER IL PAPER
+# stessa forma delle Figure 3.1, 3.4 e 3.7 della tesi (larghezza 6.3 pollici, niente bordo in alto e a destra),
+# ma con le etichette e il font delle altre figure di questo file
+# lo stile vale solo dentro queste funzioni (plt.rc_context), quindi le altre figure restano come sono
+
+STILE_COMPATTO = {
+    "font.size": 9.5,
+    "axes.labelsize": 9.5,
+    "axes.titlesize": 9.5,
+    "xtick.labelsize": 9.5,
+    "ytick.labelsize": 9.5,
+    "legend.fontsize": 8,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+}
+LARGHEZZA_COMPATTA = 6.3
+# blu scuro = configurazione consegnata, azzurro = le altre non-IID, arancione = IID, nero = centralizzato
+BLU, AZZURRO, ARANCIO = "#2E5A87", "#8FB3D9", "#D9822B"
+BARRE_ERRORE = {"elinewidth": 0.8, "capsize": 2}
+# numeri sugli assi senza zeri inutili, come nella tesi (0.4 invece di 0.40, 0 invece di 0.0)
+NUMERI_BREVI = FuncFormatter(lambda x, _: f"{x:g}")
+
+
+def carica_centralizzato(cartella: Path) -> list[dict]:
+    # metriche sul test dei modelli centralizzati di tools/centralizzato.py, uno per seed
+    return [
+        json.loads(percorso.read_text(encoding="utf-8"))["selected_test_metrics"]
+        for percorso in sorted(cartella.glob("centralizzato_seed*.json"))
+    ]
+
+
+# FIGURA 15 (Figura 3.1 della tesi): una barra per configurazione non-IID con la macro-F1 del test, media e deviazione
+# standard fra le repliche, ordinate dalla migliore; le linee tratteggiate sono il centralizzato e la federazione IID
+# rispetto alla tesi manca il rombo del massimo raggiunto durante la run: ora il test viene valutato una volta sola
+
+def figura_confronto_compatto(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    chiavi = [k for k in gruppi if not is_iid(k)]
+    if not chiavi:
+        return
+    righe = []
+    for k in chiavi:
+        media, std = metriche_test_medie(gruppi[k], ["macro_f1"])["macro_f1"]
+        righe.append((etichetta(k), media, std))
+    righe.sort(key=lambda riga: -riga[1])
+    iid_key = iid_reference_configuration(gruppi)
+    iid = metriche_test_medie(gruppi[iid_key], ["macro_f1"])["macro_f1"][0] if iid_key else None
+
+    x_min = max(0.0, np.floor(10 * (min(m - s for _, m, s in righe) - 0.02)) / 10)
+    x_max = np.ceil(50 * (max([BASELINE_MACRO_F1, iid or 0] + [m + s for _, m, s in righe]) + 0.02)) / 50
+
+    with plt.rc_context(STILE_COMPATTO):
+        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 0.24 * (len(righe) + 1.6) + 0.8))
+        for i, (_, media, std) in enumerate(righe):
+            ax.barh(i, media, xerr=std, color=BLU, height=0.62, error_kw=BARRE_ERRORE)
+            ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", ha="left", color="white", fontsize=8)
+        ax.axvline(BASELINE_MACRO_F1, color="black", ls="--", lw=1)
+        ax.text(BASELINE_MACRO_F1 - 0.004, -1.3, f"Centralized RNN ({BASELINE_MACRO_F1:.4f})",
+                ha="right", va="center", fontsize=8)
+        if iid is not None:
+            ax.axvline(iid, color=ARANCIO, ls="--", lw=1)
+            ax.text(iid - 0.004, -0.72, f"{etichetta(iid_key)} ({iid:.4f})",
+                    ha="right", va="center", fontsize=8, color=ARANCIO)
+        ax.set_yticks(range(len(righe)), [riga[0] for riga in righe])
+        ax.set_xlim(x_min, x_max)
+        ax.xaxis.set_major_formatter(NUMERI_BREVI)
+        ax.set_ylim(len(righe) - 0.4, -1.6)
+        ax.set_xlabel("macro-F1 on the test set (mean $\\pm$ std)")
+        _salva(fig, destinazione / "15_confronto_compatto.png")
+
+
+# FIGURA 16 (Figura 3.4 della tesi): istogramma della F1 di ogni classe sul test per il centralizzato, la federazione IID,
+# la configurazione consegnata e FedAvg non-IID, preso con la stessa partecipazione, lo stesso decadimento e gli stessi
+# round della consegnata quando esiste
+
+def figura_f1_per_classe_compatta(gruppi: dict[tuple, list[dict]], centralizzato: list[dict], destinazione: Path) -> None:
+    consegnata = configurazione_consegnata(gruppi)
+    fedavg = [k for k in gruppi if k[0] == "fedavg" and k[1] == "subnet" and k[2] == 0 and k[3] == 0 and k != consegnata]
+    fedavg = [k for k in fedavg if k[4:7] == consegnata[4:7]] or fedavg
+    fedavg_key = max(
+        fedavg, key=lambda k: float(np.mean([selected_validation_macro_f1(h) for h in gruppi[k]]))
+    ) if fedavg else None
+    iid_key = iid_reference_configuration(gruppi)
+    campi = [f"f1_{nome.replace('-', '_')}" for nome in cfg.CLASS_NAMES]
+
+    modelli = []
+    if centralizzato:
+        modelli.append(("Centralized RNN", [float(np.mean([m[c] for m in centralizzato])) for c in campi], "black"))
+    else:
+        print("  no centralized runs in outputs/centralizzato: per-class figure without the centralized bars")
+    for k, colore in [(iid_key, ARANCIO), (consegnata, BLU), (fedavg_key, AZZURRO)]:
+        if k is None:
+            continue
+        medie = metriche_test_medie(gruppi[k], campi)
+        modelli.append((etichetta(k), [medie[c][0] for c in campi], colore))
+
+    larghezza = 0.8 / len(modelli)
+    with plt.rc_context(STILE_COMPATTO):
+        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 2.7))
+        for j, (nome, valori, colore) in enumerate(modelli):
+            xs = np.arange(len(campi)) + (j - (len(modelli) - 1) / 2) * larghezza
+            ax.bar(xs, valori, width=larghezza, color=colore, label=nome)
+            for x, v in zip(xs, valori):
+                ax.text(x, v + 0.012, f"{v:.2f}", ha="center", fontsize=7)
+        ax.set_xticks(range(len(campi)), cfg.CLASS_NAMES)
+        ax.set_ylim(0, 1.08)
+        ax.yaxis.set_major_formatter(NUMERI_BREVI)
+        ax.set_ylabel("F1 on the test set")
+        # su due colonne, perché le etichette complete non stanno in una riga sola
+        ax.legend(ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.13), frameon=False)
+        _salva(fig, destinazione / "16_f1_per_classe_compatta.png")
+
+
+# FIGURA 17 (Figura 3.7 della tesi): due pannelli affiancati con la stessa scala, macro-F1 e balanced accuracy del test
+# per ogni configurazione, ordinate per macro-F1: arancione la IID, blu scuro la consegnata, azzurro le altre
+
+def figura_confronto_due_metriche(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
+    chiavi = list(gruppi)
+    if not chiavi:
+        return
+    consegnata = configurazione_consegnata(gruppi)
+    righe = []
+    for k in chiavi:
+        colore = ARANCIO if is_iid(k) else BLU if k == consegnata else AZZURRO
+        righe.append((etichetta(k), metriche_test_medie(gruppi[k], ["macro_f1", "balanced_accuracy"]), colore))
+    righe.sort(key=lambda riga: -riga[1]["macro_f1"][0])
+    estremi = [(m - s, m + s) for _, metriche, _ in righe for m, s in metriche.values()]
+    x_min = max(0.0, np.floor(10 * (min(a for a, _ in estremi) - 0.02)) / 10)
+    x_max = np.ceil(50 * (max(b for _, b in estremi) + 0.02)) / 50
+
+    with plt.rc_context(STILE_COMPATTO):
+        fig, axs = plt.subplots(1, 2, figsize=(LARGHEZZA_COMPATTA, 0.33 * len(righe) + 0.55), sharey=True,
+                                gridspec_kw={"wspace": 0.08})
+        for ax, metrica, titolo in [(axs[0], "macro_f1", "macro-F1"), (axs[1], "balanced_accuracy", "balanced accuracy")]:
+            for i, (_, metriche, colore) in enumerate(righe):
+                media, std = metriche[metrica]
+                ax.barh(i, media, xerr=std, color=colore, height=0.62, error_kw=BARRE_ERRORE)
+                ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", color="white", fontsize=7.5)
+            ax.set_xlim(x_min, x_max)
+            ax.xaxis.set_major_formatter(NUMERI_BREVI)
+            ax.set_title(titolo)
+        axs[0].set_yticks(range(len(righe)), [riga[0] for riga in righe])
+        axs[0].invert_yaxis()
+        _salva(fig, destinazione / "17_confronto_due_metriche.png")
+
+
 def main() -> int:
     gruppi_completi = carica_storici(cfg.OUTPUT_ROOT)
     destinazione = cfg.OUTPUT_ROOT / "figure"
@@ -1265,6 +1411,9 @@ def main() -> int:
     figura_heatmap_macro_f1_test_clienti(gruppi, destinazione)
     figura_per_classe(gruppi, destinazione)
     figura_confusione(gruppi, destinazione)
+    figura_confronto_compatto(gruppi, destinazione)
+    figura_f1_per_classe_compatta(gruppi, carica_centralizzato(cfg.OUTPUT_ROOT / "centralizzato"), destinazione)
+    figura_confronto_due_metriche(gruppi, destinazione)
     esporta_tabelle(gruppi_completi, tabelle)
 
     # The selected configuration always supplies the partition statistics,
