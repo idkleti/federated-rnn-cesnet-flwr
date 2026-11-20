@@ -110,6 +110,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Un insieme di K serie per classe viene estratto una volta e dato identico a tutti i client",
     )
 
+    p.add_argument(
+        "--exclude-holdout-validation",
+        action="store_true",
+        help=(
+            "Non distribuire ai client la validation dell'holdout. Serve per "
+            "gli split sperimentali in cui questa quota va lasciata inutilizzata."
+        ),
+    )
+
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
         "--download-only",
@@ -182,8 +191,32 @@ def holdout_split(
     random_state: int,
     test_ratio: float,
     val_ratio: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     # Separa il test set del server dal pool che verrà distribuito ai client
+    if val_ratio == 0:
+        train_ids, test_ids, y_train, y_test = train_test_split(
+            ts_ids,
+            y,
+            test_size=test_ratio,
+            random_state=random_state,
+            stratify=y,
+        )
+        return (
+            train_ids,
+            y_train,
+            ts_ids[:0],
+            y[:0],
+            test_ids,
+            y_test,
+        )
+
     temp_ratio = val_ratio + test_ratio
     train_ids, temp_ids, y_train, y_temp = train_test_split(
         ts_ids,
@@ -201,9 +234,7 @@ def holdout_split(
     )
 
     # indirizzi per client e indirizzi per server
-    pool_ids = np.concatenate([train_ids, val_ids])
-    pool_y = np.concatenate([y_train, y_val])
-    return pool_ids, pool_y, test_ids, y_test
+    return train_ids, y_train, val_ids, y_val, test_ids, y_test
 
 # Scelta di divisione: utilizzo la subnet istituzionale perchè così ho più gruppi rispetto a dividere per istituzione (548 - 283)
 
@@ -702,13 +733,23 @@ def main(argv: list[str] | None = None) -> int:
     ts_ids_all = labels.index.to_numpy()
     y_all = labels.to_numpy()
 
-    pool_ids, pool_y_str, test_ids, test_y_str = holdout_split(
+    train_ids, train_y_str, holdout_val_ids, holdout_val_y_str, test_ids, test_y_str = holdout_split(
         ts_ids_all,
         y_all,
         random_state=cfg.RANDOM_STATE,
         test_ratio=cfg.TEST_RATIO,
         val_ratio=cfg.VAL_RATIO,
     )
+    if args.exclude_holdout_validation:
+        # Lo split 40/10/40 usa il 50% rimasto come pool federato: il client
+        # ne riserva il 20% alla validation locale (40/10 complessivi), mentre
+        # il 10% dell'holdout resta fuori da training, validation e test.
+        pool_ids, pool_y_str = train_ids, train_y_str
+    else:
+        # Retrocompatibilita': nella pipeline storica la validation dell'holdout
+        # entra nel pool e ogni client ne ricava localmente la propria quota.
+        pool_ids = np.concatenate([train_ids, holdout_val_ids])
+        pool_y_str = np.concatenate([train_y_str, holdout_val_y_str])
     pool_y = encode_labels(pool_y_str)
     test_y = encode_labels(test_y_str)
 
@@ -879,6 +920,11 @@ def main(argv: list[str] | None = None) -> int:
         "own_per_client": [int(len(p)) for p in parts],
         "donated_per_client": [int(len(p)) for p in prestiti],
         "random_state": cfg.RANDOM_STATE,
+        "test_ratio": cfg.TEST_RATIO,
+        "holdout_val_ratio": cfg.VAL_RATIO,
+        "client_val_fraction": cfg.CLIENT_VAL_FRACTION,
+        "holdout_validation_excluded": bool(args.exclude_holdout_validation),
+        "holdout_validation_size": int(len(holdout_val_ids)),
         "class_names": list(cfg.CLASS_NAMES),
         "feature_names": list(cfg.FEATURE_NAMES),
         "seq_len": int(cfg.SEQ_LEN),

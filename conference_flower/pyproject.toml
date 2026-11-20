@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "federated-rnn-cesnet"
+version = "1.0.0"
+description = "Classificazione federata del tipo di dispositivo dal traffico di rete (CESNET-TimeSeries24)"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "flwr[simulation]==1.32.1",
+    "torch>=2.7.0",
+    "cesnet-tszoo>=2.2.0",
+    "scikit-learn>=1.4.0",
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    # Serve a cesnet-tszoo
+    "ipython",
+    "matplotlib>=3.8.0"
+]
+license = "MIT"
+
+[tool.hatch.build.targets.wheel]
+packages = ["fedrnn"]
+
+[tool.flwr.app]
+publisher = "leti"
+
+# Flower applies .gitignore before building the FAB; data and outputs stay local.
+
+[tool.flwr.app.components]
+serverapp = "fedrnn.server_app:app"
+clientapp = "fedrnn.client_app:app"
+
+
+# -- CONFIGURAZIONE DELLA RUN --
+
+# Si possono sovrascrivere senza cambiare il file:
+#     flwr run . --run-config "num-server-rounds=2 fraction-train=0.1"
+
+[tool.flwr.app.config]
+num-server-rounds = 50
+fraction-train = 0.5
+fraction-evaluate = 0.5
+local-epochs = 2
+# Il valore di learning rate è stato scelto con lr_find() nella versione di partenza centralizzata
+learning-rate = 0.000692
+weight-decay = 0.01
+batch-size = 128
+# Le baseline esistenti usano Adam. FedNova richiede esplicitamente SGD senza
+# momentum e lo imposta soltanto nel suo script dedicato.
+local-optimizer = "adam"
+
+# Il learning rate cala di questo fattore 0.97 a ogni round, quindi l'ultimo passo vale il 22% del primo. 
+lr-decay = 0.97
+
+# Scelta dell'algoritmo di aggregazione (fedavg, fedprox, fedadam, fedyogi,
+# fedavgm, fedadagrad, fednova, classaware)
+strategy = "fedavg"
+
+# Server-side step size for FedAdam, FedYogi, FedAvgM, and FedAdagrad.
+# The paper's values for each strategy are passed via --run-config.
+server-learning-rate = 0.01
+
+# Momentum server-side di FedAvgM. La suite dedicata usa il valore standard 0.9.
+server-momentum = 0.9
+
+# Stabilizzatore nel denominatore di FedAdagrad. La suite dedicata lascia 0.001.
+server-tau = 0.001
+
+# Controlla quanto i modelli dei client devono rimanere vicini al modello globale
+# aggiungendo un termine di penalizzazione alla funzione di perdita
+proximal-mu = 0.1
+
+# Per il tuning usa false: il checkpoint e gli iperparametri vengono scelti
+# esclusivamente con la validation federata, senza leggere il test centrale.
+evaluate-central-test = true
+
+
+# -- SIMULAZIONE DELLA FEDERAZIONE --
+#
+# Flower 1.32 does not read simulation runtime settings from pyproject.toml.
+# Supply the federation size manually with --federation-config:
+#   num-supernodes=69 client-resources-num-cpus=11 client-resources-num-gpus=0.5
+#
+# I 69 SuperNode corrispondono alle subnet istituzionali con almeno 10 indirizzi
+# etichettati. Il valore deve coincidere con meta.json degli shard, altrimenti la
+# ClientApp termina esplicitamente per evitare dati inutilizzati.

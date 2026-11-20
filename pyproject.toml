@@ -26,8 +26,7 @@ packages = ["fedrnn"]
 [tool.flwr.app]
 publisher = "leti"
 
-# escludo dal fab di flwr gli storici e le figure perchè ad ogni esecuzione nasceva il problema del "FAB size exceeds maximum allowed size" (max 10MB)
-fab-exclude = ["outputs/**", ".gitignore"]
+# Flower applica .gitignore prima di fab-exclude: outputs/ è già esclusa dal FAB.
 
 [tool.flwr.app.components]
 serverapp = "fedrnn.server_app:app"

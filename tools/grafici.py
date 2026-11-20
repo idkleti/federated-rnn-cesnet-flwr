@@ -31,8 +31,10 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fedrnn import config as cfg 
 
-# macro f1-score del test set del modello centralizzato con cui voglio confrontarmi 
-BASELINE_MACRO_F1 = 0.7355 # appare in due figure come riferimento
+# Riferimenti sul test centrale del modello centralizzato.
+BASELINE_MACRO_F1 = 0.7355
+BASELINE_BALANCED_ACCURACY = 0.7808
+BASELINE_BALANCED_ACCURACY_STD = 0.0152  # 25 run
 
 COLORI = {
     "end-device": "#4C72B0",
@@ -49,12 +51,12 @@ COLORI = {
 # per una colonna, usa circa 3.3--3.5 in e riduci le dimensioni dei font insieme.
 PLOT_CONFIG = {
     "dpi": 300,
-    "base_font_size": 12,
-    "tick_font_size": 11,
-    "label_font_size": 13,
-    "title_font_size": 15,
-    "legend_font_size": 10.5,
-    "annotation_font_size": 10.5,
+    "base_font_size": 13,
+    "tick_font_size": 12,
+    "label_font_size": 14,
+    "title_font_size": 16,
+    "legend_font_size": 12,
+    "annotation_font_size": 12,
     "curve_figsize": (10.5, 6.0),
     "curve_legend_columns": 2,
     "curve_legend_y": -0.25,
@@ -68,6 +70,7 @@ PLOT_CONFIG = {
     "local_loss_figsize": (10.5, 6.0),
     "heatmap_panel_width": 5.4,
     "heatmap_panel_height": 3.8,
+    "heatmap_single_figsize": (7.2, 5.2),
     "heatmap_colorbar_left": 0.89,
     "heatmap_colorbar_width": 0.022,
     "grid_alpha": 0.30,
@@ -269,15 +272,16 @@ def etichetta(chiave: tuple) -> str:
         server_momentum,
         server_tau,
     ) = chiave
-    parti = [
-        STRATEGY_LABELS.get(strategia, strategia),
-        PARTITION_LABELS.get(partizione, partizione),
-        f"f={ft:g}",
-    ]
+    parti = [STRATEGY_LABELS.get(strategia, strategia), PARTITION_LABELS.get(partizione, partizione)]
+    if ft != PAPER_UNIFORM_FRACTION_TRAIN:
+        parti.append(f"f={ft:g}")
     if ribilanciamento:
         parti.append(f"RB={ribilanciamento}")
     if mini_dataset:
-        parti.append(f"shared={mini_dataset}")
+        parti.append(
+            "shared set" if mini_dataset == PAPER_SHARED_MINI_DATASET
+            else f"shared set ({mini_dataset}/class)"
+        )
     # compare solo per FedAdam
     if server_lr is not None and server_lr != 0.01:
         parti.append(f"eta={server_lr:g}")
@@ -292,6 +296,17 @@ def etichetta(chiave: tuple) -> str:
     # usano colore/barre per distinguere IID e non-IID.
     prefix = "★ " if is_iid(chiave) else ""
     return prefix + " · ".join(parti)
+
+
+def nome_heatmap_configurazione(chiave: tuple) -> str:
+    """Nome stabile e univoco anche se sono presenti configurazioni storiche."""
+    strategia, partizione, rebalance, shared, ft, decay, rounds, server_lr, mu, momentum, tau = chiave
+    parti = [strategia, partizione, f"f{ft:g}", f"r{rounds}", f"decay{decay:g}"]
+    for nome, valore in (("rb", rebalance), ("shared", shared), ("eta", server_lr),
+                         ("mu", mu), ("momentum", momentum), ("tau", tau)):
+        if valore is not None and valore != 0:
+            parti.append(f"{nome}{valore:g}")
+    return "_".join(parti)
 
 
 def serie_macro_f1(h: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -602,19 +617,33 @@ def figura_confronto_balanced_accuracy(
         )
     ax.set_yticks(y)
     ax.set_yticklabels([entry[1] for entry in entries], fontsize=PLOT_CONFIG["tick_font_size"])
+    ax.axvspan(
+        BASELINE_BALANCED_ACCURACY - BASELINE_BALANCED_ACCURACY_STD,
+        BASELINE_BALANCED_ACCURACY + BASELINE_BALANCED_ACCURACY_STD,
+        color="black", alpha=0.10, zorder=1,
+    )
+    riferimento = ax.axvline(
+        BASELINE_BALANCED_ACCURACY, color="black", linestyle="--", linewidth=1.5, zorder=3,
+    )
     ax.set_xlabel("server test balanced accuracy")
     ax.set_title("Balanced accuracy of validation-selected checkpoints")
     ax.set_xlim(0, 1)
     ax.set_ylim(-0.7, len(entries) - 0.3)
     ax.grid(alpha=PLOT_CONFIG["grid_alpha"], axis="x")
-    ax.legend(
+    fig.legend(
         handles=[
             Patch(facecolor=PLOT_CONFIG["non_iid_color"], edgecolor="black", label="non-IID"),
             Patch(facecolor=PLOT_CONFIG["iid_color"], edgecolor="black", hatch="//", label="IID"),
+            riferimento,
+        ],
+        labels=[
+            "non-IID", "IID",
+            f"Centralized RNN: {BASELINE_BALANCED_ACCURACY:.4f} ± {BASELINE_BALANCED_ACCURACY_STD:.4f}",
         ],
         fontsize=PLOT_CONFIG["legend_font_size"],
-        loc="lower right",
+        loc="lower center", bbox_to_anchor=(0.5, 0.01), ncol=3, frameon=False,
     )
+    fig.subplots_adjust(bottom=0.14)
     _salva(fig, destinazione / "14_confronto_balanced_accuracy.png")
 
 
@@ -895,6 +924,49 @@ def figura_loss_locali_iqr(gruppi: dict[tuple, list[dict]], destinazione: Path) 
     _salva(fig, destinazione / "08_loss_locali_iqr.png")
 
 
+def salva_heatmap_clienti_singola(
+    chiave: tuple,
+    matrice: np.ndarray,
+    destinazione: Path,
+    prefisso: str,
+    cmap,
+    vmin: float,
+    vmax: float,
+    etichetta_colore: str,
+    etichetta_x: str,
+) -> None:
+    """Esporta un pannello autonomo, leggibile anche separato dalla tavola."""
+    fig, ax = plt.subplots(figsize=PLOT_CONFIG["heatmap_single_figsize"])
+    image = ax.imshow(
+        np.ma.masked_invalid(matrice), aspect="auto", interpolation="nearest",
+        cmap=cmap, vmin=vmin, vmax=vmax,
+    )
+    n_clients, n_columns = matrice.shape
+    ax.set_title(etichetta(chiave), fontsize=PLOT_CONFIG["title_font_size"])
+    ax.set_xlabel(etichetta_x)
+    ax.set_ylabel("client rank by train samples")
+    if etichetta_x == "test replicate":
+        ax.set_xticks(range(n_columns), range(1, n_columns + 1))
+    else:
+        ax.set_xticks(
+            [0, max(0, n_columns // 2 - 1), n_columns - 1],
+            [1, max(1, n_columns // 2), n_columns],
+        )
+    ax.set_yticks(
+        [0, max(0, n_clients // 2 - 1), n_clients - 1],
+        [1, max(1, n_clients // 2), n_clients],
+    )
+    colorbar = fig.colorbar(image, ax=ax, fraction=0.05, pad=0.04)
+    colorbar.set_label(etichetta_colore)
+    gray_note = (
+        "Gray: no test samples" if etichetta_x == "test replicate"
+        else "Gray: client not sampled"
+    )
+    fig.text(0.5, 0.015, gray_note, ha="center", fontsize=PLOT_CONFIG["tick_font_size"])
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    _salva(fig, destinazione / f"{prefisso}_{nome_heatmap_configurazione(chiave)}.png")
+
+
 def figura_heatmap_loss_clienti(gruppi: dict[tuple, list[dict]], destinazione: Path) -> None:
     """Una heatmap per strategia, con righe ordinate per numerosita' client."""
     keys = configurazioni_confronto_local_loss(gruppi)
@@ -986,6 +1058,11 @@ def figura_heatmap_loss_clienti(gruppi: dict[tuple, list[dict]], destinazione: P
         colorbar = fig.colorbar(image, cax=colorbar_ax)
         colorbar.set_label("mean local training loss")
     _salva(fig, destinazione / "09_heatmap_loss_clienti.png")
+    for key, matrix, _ in matrices:
+        salva_heatmap_clienti_singola(
+            key, matrix, destinazione, "09_heatmap_loss_clienti", cmap,
+            vmin, vmax, "mean local training loss", "communication round",
+        )
 
 
 # FIGURA 10: MACRO-F1 DEL TEST CENTRALE, SUDDIVISA PER CLIENT/SUBNET
@@ -1085,6 +1162,11 @@ def figura_heatmap_macro_f1_test_clienti(
         colorbar = fig.colorbar(image, cax=colorbar_ax)
         colorbar.set_label("macro-F1 on central test")
     _salva(fig, destinazione / "10_heatmap_macro_f1_test_clienti.png")
+    for key, matrix in matrices:
+        salva_heatmap_clienti_singola(
+            key, matrix, destinazione, "10_heatmap_macro_f1_test_clienti", cmap,
+            0, 1, "macro-F1 on central test", "test replicate",
+        )
 
 
 # FIGURA 3: F1 PER CLASSE
@@ -1237,21 +1319,21 @@ def figura_heatmap_label_skew(summary: dict, destinazione: Path) -> None:
 
 
 # FIGURE 15, 16 e 17: VERSIONI COMPATTE PER IL PAPER
-# stessa forma delle Figure 3.1, 3.4 e 3.7 della tesi (larghezza 6.3 pollici, niente bordo in alto e a destra),
+# stessa forma delle Figure 3.1, 3.4 e 3.7 della tesi (niente bordo in alto e a destra),
 # ma con le etichette e il font delle altre figure di questo file
 # lo stile vale solo dentro queste funzioni (plt.rc_context), quindi le altre figure restano come sono
 
 STILE_COMPATTO = {
-    "font.size": 9.5,
-    "axes.labelsize": 9.5,
-    "axes.titlesize": 9.5,
-    "xtick.labelsize": 9.5,
-    "ytick.labelsize": 9.5,
-    "legend.fontsize": 8,
+    "font.size": PLOT_CONFIG["base_font_size"],
+    "axes.labelsize": PLOT_CONFIG["label_font_size"],
+    "axes.titlesize": PLOT_CONFIG["title_font_size"],
+    "xtick.labelsize": PLOT_CONFIG["tick_font_size"],
+    "ytick.labelsize": PLOT_CONFIG["tick_font_size"],
+    "legend.fontsize": PLOT_CONFIG["legend_font_size"],
     "axes.spines.top": False,
     "axes.spines.right": False,
 }
-LARGHEZZA_COMPATTA = 6.3
+LARGHEZZA_COMPATTA = 8.8
 # blu scuro = configurazione consegnata, azzurro = le altre non-IID, arancione = IID, nero = centralizzato
 BLU, AZZURRO, ARANCIO = "#2E5A87", "#8FB3D9", "#D9822B"
 BARRE_ERRORE = {"elinewidth": 0.8, "capsize": 2}
@@ -1287,17 +1369,17 @@ def figura_confronto_compatto(gruppi: dict[tuple, list[dict]], destinazione: Pat
     x_max = np.ceil(50 * (max([BASELINE_MACRO_F1, iid or 0] + [m + s for _, m, s in righe]) + 0.02)) / 50
 
     with plt.rc_context(STILE_COMPATTO):
-        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 0.24 * (len(righe) + 1.6) + 0.8))
+        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 0.42 * (len(righe) + 1.6) + 1.0))
         for i, (_, media, std) in enumerate(righe):
             ax.barh(i, media, xerr=std, color=BLU, height=0.62, error_kw=BARRE_ERRORE)
-            ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", ha="left", color="white", fontsize=8)
+            ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", ha="left", color="white", fontsize=PLOT_CONFIG["annotation_font_size"])
         ax.axvline(BASELINE_MACRO_F1, color="black", ls="--", lw=1)
         ax.text(BASELINE_MACRO_F1 - 0.004, -1.3, f"Centralized RNN ({BASELINE_MACRO_F1:.4f})",
-                ha="right", va="center", fontsize=8)
+                ha="right", va="center", fontsize=PLOT_CONFIG["annotation_font_size"])
         if iid is not None:
             ax.axvline(iid, color=ARANCIO, ls="--", lw=1)
             ax.text(iid - 0.004, -0.72, f"{etichetta(iid_key)} ({iid:.4f})",
-                    ha="right", va="center", fontsize=8, color=ARANCIO)
+                    ha="right", va="center", fontsize=PLOT_CONFIG["annotation_font_size"], color=ARANCIO)
         ax.set_yticks(range(len(righe)), [riga[0] for riga in righe])
         ax.set_xlim(x_min, x_max)
         ax.xaxis.set_major_formatter(NUMERI_BREVI)
@@ -1333,12 +1415,12 @@ def figura_f1_per_classe_compatta(gruppi: dict[tuple, list[dict]], centralizzato
 
     larghezza = 0.8 / len(modelli)
     with plt.rc_context(STILE_COMPATTO):
-        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 2.7))
+        fig, ax = plt.subplots(figsize=(LARGHEZZA_COMPATTA, 3.6))
         for j, (nome, valori, colore) in enumerate(modelli):
             xs = np.arange(len(campi)) + (j - (len(modelli) - 1) / 2) * larghezza
             ax.bar(xs, valori, width=larghezza, color=colore, label=nome)
             for x, v in zip(xs, valori):
-                ax.text(x, v + 0.012, f"{v:.2f}", ha="center", fontsize=7)
+                ax.text(x, v + 0.012, f"{v:.2f}", ha="center", fontsize=PLOT_CONFIG["annotation_font_size"])
         ax.set_xticks(range(len(campi)), cfg.CLASS_NAMES)
         ax.set_ylim(0, 1.08)
         ax.yaxis.set_major_formatter(NUMERI_BREVI)
@@ -1363,21 +1445,44 @@ def figura_confronto_due_metriche(gruppi: dict[tuple, list[dict]], destinazione:
     righe.sort(key=lambda riga: -riga[1]["macro_f1"][0])
     estremi = [(m - s, m + s) for _, metriche, _ in righe for m, s in metriche.values()]
     x_min = max(0.0, np.floor(10 * (min(a for a, _ in estremi) - 0.02)) / 10)
-    x_max = np.ceil(50 * (max(b for _, b in estremi) + 0.02)) / 50
+    # Entrambi i riferimenti centralizzati devono rientrare nella scala comune.
+    x_max = np.ceil(50 * (max(
+        BASELINE_MACRO_F1,
+        BASELINE_BALANCED_ACCURACY,
+        max(b for _, b in estremi),
+    ) + 0.02)) / 50
 
     with plt.rc_context(STILE_COMPATTO):
-        fig, axs = plt.subplots(1, 2, figsize=(LARGHEZZA_COMPATTA, 0.33 * len(righe) + 0.55), sharey=True,
+        fig, axs = plt.subplots(1, 2, figsize=(LARGHEZZA_COMPATTA, 0.52 * len(righe) + 1.0), sharey=True,
                                 gridspec_kw={"wspace": 0.08})
         for ax, metrica, titolo in [(axs[0], "macro_f1", "macro-F1"), (axs[1], "balanced_accuracy", "balanced accuracy")]:
             for i, (_, metriche, colore) in enumerate(righe):
                 media, std = metriche[metrica]
                 ax.barh(i, media, xerr=std, color=colore, height=0.62, error_kw=BARRE_ERRORE)
-                ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", color="white", fontsize=7.5)
+                ax.text(x_min + 0.005, i, f"{media:.4f}", va="center", color="white", fontsize=PLOT_CONFIG["annotation_font_size"])
             ax.set_xlim(x_min, x_max)
             ax.xaxis.set_major_formatter(NUMERI_BREVI)
             ax.set_title(titolo)
+        riferimento = axs[0].axvline(
+            BASELINE_MACRO_F1, color="black", linestyle="--", linewidth=1.5,
+            zorder=3,
+        )
+        riferimento_balanced = axs[1].axvline(
+            BASELINE_BALANCED_ACCURACY, color="black", linestyle="--", linewidth=1.5,
+            zorder=3,
+        )
         axs[0].set_yticks(range(len(righe)), [riga[0] for riga in righe])
         axs[0].invert_yaxis()
+        fig.legend(
+            [riferimento, riferimento_balanced],
+            [
+                f"Centralized macro-F1: {BASELINE_MACRO_F1:.4f}",
+                f"Centralized bal. acc.: {BASELINE_BALANCED_ACCURACY:.4f}",
+            ],
+            loc="lower center", bbox_to_anchor=(0.5, 0.01), frameon=False,
+            fontsize=PLOT_CONFIG["legend_font_size"], ncol=2,
+        )
+        fig.subplots_adjust(bottom=0.18)
         _salva(fig, destinazione / "17_confronto_due_metriche.png")
 
 

@@ -108,8 +108,11 @@ NUM_CLASSES = len(CLASS_NAMES)
 # due macro-F1 si può attribuire al federated learning invece che a un test set capitato più facile.
 
 RANDOM_STATE = 111
-TEST_RATIO = 0.10
-VAL_RATIO = 0.10
+# Le variabili d'ambiente permettono alle suite SLURM di provare uno split
+# diverso senza modificare il codice versionato. I default restano quelli
+# storici, così le run normali sono invarianti.
+TEST_RATIO = float(os.getenv("FEDRNN_TEST_RATIO", "0.10"))
+VAL_RATIO = float(os.getenv("FEDRNN_HOLDOUT_VAL_RATIO", "0.10"))
 
 # Quanto di ogni shard il client tiene da parte per valutare il modello globale
-CLIENT_VAL_FRACTION = 0.20
+CLIENT_VAL_FRACTION = float(os.getenv("FEDRNN_CLIENT_VAL_FRACTION", "0.20"))
