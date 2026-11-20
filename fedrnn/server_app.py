@@ -415,7 +415,20 @@ def main(grid: Grid, context: Context) -> None:
         f"{meta['pool_size']:,}",
         f"{meta['server_test_size']:,}",
     )
-    
+    # stratified = test e validazione su indirizzi diversi, temporal = stessi indirizzi in periodi diversi (prepare_data.py --split)
+    split = str(meta.get("split", "stratified"))
+    if split == "temporal":
+        periodi = meta["time_split"]
+        log.info(
+            "Split temporale: addestramento giorni %d-%d, validazione %d-%d, test %d-%d (stessi indirizzi)",
+            periodi["train_days"][0] + 1,
+            periodi["train_days"][1],
+            periodi["val_days"][0] + 1,
+            periodi["val_days"][1],
+            periodi["test_days"][0] + 1,
+            periodi["test_days"][1],
+        )
+
     if ribilanciamento:
         log.info(
             "RIBILANCIAMENTO ATTIVO: ogni client ha almeno %d net-device, %s copie "
@@ -538,6 +551,8 @@ def main(grid: Grid, context: Context) -> None:
                 "group_column": meta.get("group_column"),
                 "rebalance_net_device": ribilanciamento,
                 "mini_dataset": mini_dataset,
+                "split": split,
+                "time_split": meta.get("time_split"),
                 "summary": meta["partition_summary"],
             },
             "feature_mean": [float(v) for v in mean],

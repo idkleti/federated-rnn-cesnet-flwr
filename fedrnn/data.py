@@ -175,6 +175,28 @@ def _split_locale(
     return np.concatenate([train_idx, prestate]), val_idx
 
 
+# SPLIT TEMPORALE (prepare_data.py --split temporal)
+# ogni client usa tutti i suoi indirizzi sia per l'addestramento sia per la validazione, ma in periodi diversi: i primi giorni dello shard
+# per l'addestramento e quelli dopo per la validazione. Il periodo di test non è negli shard dei client ma solo nel test del server
+
+# restituisce (fine_train, fine_val) in giorni dello shard, oppure None se gli shard sono divisi per indirizzi
+def _periodi_temporali() -> tuple[int, int] | None:
+    meta = load_meta()
+    if meta.get("split", "stratified") != "temporal":
+        return None
+    periodi = meta["time_split"]
+    return int(periodi["train_days"][1]), int(periodi["val_days"][1])
+
+
+def _controlla_giorni(X: np.ndarray, fine_val: int) -> None:
+    # lo shard deve contenere esattamente i giorni di addestramento e validazione, altrimenti meta.json e shard vengono da generazioni diverse
+    if X.shape[2] != fine_val:
+        raise RuntimeError(
+            f"Lo shard ha {X.shape[2]} giorni ma meta.json ne dichiara {fine_val} fra addestramento e validazione. "
+            "Rigenera gli shard con python prepare_data.py --split temporal."
+        )
+
+
 # statistiche locali per standardizzazione federata
 
 # scrivo media e varianza come funzioni di tre somme (numero di valori, somma di valori, somma di quadrati) in modo tale che ogni client le calcoli
@@ -240,18 +262,32 @@ def build_client_loaders(
     # recupero delle etichette per comunicare al server quanti campioni ha davvero usato
     X, y, _ = load_shard(config.client_shard_path(partition_id), mean=mean, std=std)
 
-    train_idx, val_idx = _split_locale(
-        y,
-        partition_id,
-        val_fraction=val_fraction,
-        random_state=random_state,
-    )
+    periodi = _periodi_temporali()
+    if periodi is not None:
+        fine_train, fine_val = periodi
+        _controlla_giorni(X, fine_val)
+        # tutte le righe (anche quelle prestate) nel periodo di addestramento, solo le proprie nel periodo di validazione
+        # le fette sui giorni sono viste dello shard in cache, quindi non lo duplicano in memoria
+        n_own = _righe_proprie(partition_id, len(y))
+        train_ds = TensorDataset(torch.from_numpy(X[:, :, :fine_train]), torch.from_numpy(y))
+        val_ds = TensorDataset(
+            torch.from_numpy(X[:n_own, :, fine_train:fine_val]), torch.from_numpy(y[:n_own])
+        )
+        y_train = y
+    else:
+        train_idx, val_idx = _split_locale(
+            y,
+            partition_id,
+            val_fraction=val_fraction,
+            random_state=random_state,
+        )
 
-    # Subset tiene solo la lista degli indici quindi rimane in memoria una copia sola dello shard nella cache
-    # from_numpy condivide la memoria con l'array in cache anzichè copiarlo 
-    full = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
-    train_ds = Subset(full, train_idx.tolist())
-    val_ds = Subset(full, val_idx.tolist())
+        # Subset tiene solo la lista degli indici quindi rimane in memoria una copia sola dello shard nella cache
+        # from_numpy condivide la memoria con l'array in cache anzichè copiarlo
+        full = TensorDataset(torch.from_numpy(X), torch.from_numpy(y))
+        train_ds = Subset(full, train_idx.tolist())
+        val_ds = Subset(full, val_idx.tolist())
+        y_train = y[train_idx]
 
 
     train_loader = DataLoader(
@@ -269,7 +305,7 @@ def build_client_loaders(
         shuffle=False,
         num_workers=0,
     )
-    return train_loader, val_loader, y[train_idx]
+    return train_loader, val_loader, y_train
 
 # invio delle statistiche iniziali in clientapp da @app.query()
 def client_training_statistics(
@@ -280,6 +316,15 @@ def client_training_statistics(
 ) -> tuple[dict[str, list[float]], np.ndarray]:
     # uso solo la parte di addestramento, che potrebbe contenere anche i dati ricevuti da altri
     X, y, _ = load_shard(config.client_shard_path(partition_id))
+
+    # con lo split temporale la parte di addestramento sono tutte le righe nei soli giorni di addestramento,
+    # così media e dev std non vedono mai il periodo di validazione
+    periodi = _periodi_temporali()
+    if periodi is not None:
+        fine_train, fine_val = periodi
+        _controlla_giorni(X, fine_val)
+        return local_feature_statistics(X[:, :, :fine_train]), y
+
     train_idx, _ = _split_locale(
         y,
         partition_id,

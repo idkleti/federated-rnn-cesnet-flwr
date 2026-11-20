@@ -20,10 +20,18 @@
 #       Come menzionato in esperimenti.sh e RISULTATI.md, questo argomento rilassa l'ipotesi di federated learning dato che alcune serie passano da un client 
 #       all'altro, e l'idea è la stessa di Zhao et al. 2018 in "Federated Learning with Non-IID Data"
 
+# Divisione in addestramento, validazione e test
+#   --split stratified : divisione di default per indirizzi, il 10% degli indirizzi diventa il test del server e ogni client tiene il 20% dei
+#       propri per la validazione
+#   --split temporal : nessun indirizzo viene tenuto da parte e gli stessi indirizzi compaiono in tutti e tre gli insiemi, ma in periodi diversi,
+#       con le stesse proporzioni dello split per indirizzi applicate ai 280 giorni (80/10/10): giorni 1-224 per l'addestramento, 225-252 per la
+#       validazione e 253-280 per il test.
+#       Gli shard dei client contengono solo i giorni 1-252 e il test del server solo gli ultimi 28, così il periodo di test non entra mai nei client
+
 
 # lo script alla fine stampa il valore da passare a Flower come num-supernodes
 
-# il test set del server non cambia
+# con --split stratified il test set del server non cambia
 
 from __future__ import annotations
 
@@ -108,6 +116,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0, # default è spento
         metavar="K",
         help="Un insieme di K serie per classe viene estratto una volta e dato identico a tutti i client",
+    )
+
+    p.add_argument(
+        "--split",
+        choices=("stratified", "temporal"),
+        default="stratified",
+        help="Divisione in addestramento/validazione/test: per indirizzi (stratificata) o per periodi di tempo",
     )
 
     p.add_argument(
@@ -235,6 +250,38 @@ def holdout_split(
 
     # indirizzi per client e indirizzi per server
     return train_ids, y_train, val_ids, y_val, test_ids, y_test
+
+
+# SPLIT TEMPORALE
+# applica ai giorni le stesse proporzioni dello split per indirizzi (TEST_RATIO e VAL_RATIO di config, 10% e 10% di default)
+
+# COME SI AVVIA
+#   il modo più semplice è lo script che fa tutto da solo (shard, num-supernodes e run di prova):
+#       bash tools/esperimenti_split_temporale.sh
+#   a mano invece:
+#       1. python prepare_data.py --split temporal
+#       2. flwr run . --federation-config "num-supernodes=71 ..." --run-config "..."
+#   - num-supernodes deve essere 71 e non 69, perchè senza indirizzi tenuti da parte per il test più subnet superano la soglia
+#     dei 10 indirizzi (il valore giusto lo stampa prepare_data.py alla fine)
+#   - prepare_data.py senza --split rigenera gli shard con lo split per indirizzi, quindi va rilanciato con --split temporal
+#     prima di ogni run temporale se nel frattempo sono state fatte run normali sulla stessa cartella degli shard
+#   - ClientApp e ServerApp capiscono da soli che lo split è temporale leggendo meta.json, e lo scrivono nello storico di ogni run
+#     (partition -> split e time_split)
+#   - se si usa FEDRNN_SHARD_ROOT per una cartella separata, il superlink locale va fermato prima (pkill -f flower-superlink),
+#     altrimenti le app continuano a leggere la cartella con cui era stato avviato
+
+# restituisce dove finiscono addestramento e validazione: i giorni [0, fine_train) vanno in addestramento, [fine_train, fine_val) in validazione
+# e [fine_val, seq_len) in test
+def giorni_split_temporale(seq_len: int, *, val_ratio: float, test_ratio: float) -> tuple[int, int]:
+    giorni_test = int(round(seq_len * test_ratio))
+    giorni_val = int(round(seq_len * val_ratio))
+    fine_val = seq_len - giorni_test
+    fine_train = fine_val - giorni_val
+    if giorni_test < 1 or giorni_val < 1 or fine_train < 1:
+        raise SystemExit(
+            f"Con test {test_ratio} e validazione {val_ratio} su {seq_len} giorni uno dei tre periodi resta vuoto."
+        )
+    return fine_train, fine_val
 
 # Scelta di divisione: utilizzo la subnet istituzionale perchè così ho più gruppi rispetto a dividere per istituzione (548 - 283)
 
@@ -488,6 +535,7 @@ def write_shard(
     ts_ids: np.ndarray,
     *,
     test_client_ids: np.ndarray | None = None,
+    giorni: tuple[int, int] | None = None,
 ) -> None:
     arrays = {
         "X": X.astype(np.float32, copy=False),
@@ -498,6 +546,9 @@ def write_shard(
     # oppure -1 se quel gruppo non e' un client federato valido.
     if test_client_ids is not None:
         arrays["client_ids"] = np.asarray(test_client_ids, dtype=np.int64)
+    # solo nel test dello split temporale: primo giorno incluso e ultimo escluso del periodo che contiene
+    if giorni is not None:
+        arrays["days"] = np.asarray(giorni, dtype=np.int64)
     np.savez(path, **arrays)
 
 
@@ -524,6 +575,9 @@ def server_test_valido(test_ids: np.ndarray) -> bool:
         with np.load(percorso) as data:
             presenti = np.asarray(data["ts_ids"])
             client_ids = np.asarray(data["client_ids"])
+            # un test dello split temporale contiene solo gli ultimi giorni, quindi non vale per lo split per indirizzi
+            if "days" in data.files:
+                return False
     except Exception:
         # file troncato o illeggibile: meglio riscriverlo
         return False
@@ -698,6 +752,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("Dataset in %s", cfg.DATA_ROOT)
     log.info("Shard in    %s", cfg.SHARD_ROOT)
     log.info("Divisione   %s (%s)", args.partition, DESCRIZIONE_PARTIZIONE[args.partition])
+    if args.split == "temporal" and args.exclude_holdout_validation:
+        raise SystemExit(
+            "--exclude-holdout-validation vale solo con --split stratified: con lo split temporale non c'è una validazione per indirizzi."
+        )
     if args.rebalance_net_device > 0:
         log.info("Ribilanciamento net-device a %d per client", args.rebalance_net_device)
 
@@ -733,13 +791,32 @@ def main(argv: list[str] | None = None) -> int:
     ts_ids_all = labels.index.to_numpy()
     y_all = labels.to_numpy()
 
-    train_ids, train_y_str, holdout_val_ids, holdout_val_y_str, test_ids, test_y_str = holdout_split(
-        ts_ids_all,
-        y_all,
-        random_state=cfg.RANDOM_STATE,
-        test_ratio=cfg.TEST_RATIO,
-        val_ratio=cfg.VAL_RATIO,
-    )
+    if args.split == "temporal":
+        # nessun indirizzo resta fuori: tutti vanno ai client e il test viene fatto sugli stessi indirizzi nell'ultimo periodo
+        # (gli indirizzi di test si fissano dopo la partizione, perché sono quelli rimasti nei client dopo la soglia sulle subnet)
+        fine_train, fine_val = giorni_split_temporale(
+            cfg.SEQ_LEN, val_ratio=cfg.VAL_RATIO, test_ratio=cfg.TEST_RATIO
+        )
+        log.info(
+            "Split temporale: addestramento giorni 1-%d, validazione %d-%d, test %d-%d",
+            fine_train,
+            fine_train + 1,
+            fine_val,
+            fine_val + 1,
+            cfg.SEQ_LEN,
+        )
+        train_ids, train_y_str = ts_ids_all, y_all
+        holdout_val_ids, holdout_val_y_str = ts_ids_all[:0], y_all[:0]
+        test_ids, test_y_str = ts_ids_all[:0], y_all[:0]
+    else:
+        fine_train = fine_val = None
+        train_ids, train_y_str, holdout_val_ids, holdout_val_y_str, test_ids, test_y_str = holdout_split(
+            ts_ids_all,
+            y_all,
+            random_state=cfg.RANDOM_STATE,
+            test_ratio=cfg.TEST_RATIO,
+            val_ratio=cfg.VAL_RATIO,
+        )
     if args.exclude_holdout_validation:
         # Lo split 40/10/40 usa il 50% rimasto come pool federato: il client
         # ne riserva il 20% alla validation locale (40/10 complessivi), mentre
@@ -753,11 +830,18 @@ def main(argv: list[str] | None = None) -> int:
     pool_y = encode_labels(pool_y_str)
     test_y = encode_labels(test_y_str)
 
-    log.info(
-        "Pool federato: %s indirizzi | test del server: %s indirizzi",
-        f"{len(pool_ids):,}",
-        f"{len(test_ids):,}",
-    )
+    if args.split == "temporal":
+        log.info(
+            "Pool federato: %s indirizzi | test del server: gli stessi indirizzi negli ultimi %d giorni",
+            f"{len(pool_ids):,}",
+            cfg.SEQ_LEN - fine_val,
+        )
+    else:
+        log.info(
+            "Pool federato: %s indirizzi | test del server: %s indirizzi",
+            f"{len(pool_ids):,}",
+            f"{len(test_ids):,}",
+        )
 
     # partizione per subnet istituzionale
     group_col = resolve_group_column(relationship, ts_id_col)
@@ -805,6 +889,13 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(indirizzi_del_pool):,}",
         )
 
+    # con lo split temporale il test del server sono gli indirizzi dei client, fissati qui prima che ribilanciamento o insieme condiviso
+    # cambino le righe proprie, così il test resta identico in tutte le modalità di partizione
+    if args.split == "temporal":
+        indici_test = np.sort(np.concatenate(parts))
+        test_ids = pool_ids[indici_test]
+        test_y = pool_y[indici_test]
+
     summary = summarize_partition(parts, pool_y)
     print_summary(summary, args.partition)
 
@@ -838,6 +929,8 @@ def main(argv: list[str] | None = None) -> int:
     batch: list[int] = []
     batch_size = 0
     written = 0
+    # con lo split temporale: per ogni client le righe proprie e i loro ultimi giorni, che diventano il test del server
+    test_raccolto: list[tuple[np.ndarray, np.ndarray]] = []
 
     def flush(batch: list[int]) -> int:
         if not batch:
@@ -859,12 +952,18 @@ def main(argv: list[str] | None = None) -> int:
         for client_id in batch:
             idx = righe_di[client_id]
             rows = np.array([position[int(t)] for t in pool_ids[idx]])
+            # con lo split temporale il client riceve solo i giorni di addestramento e validazione
             write_shard(
                 cfg.client_shard_path(client_id),
-                X[rows],
+                X[rows] if fine_val is None else X[rows, :, :fine_val],
                 pool_y[idx],
                 pool_ids[idx],
             )
+            # e gli ultimi giorni delle sue righe proprie vengono messi da parte per il test del server
+            if fine_val is not None:
+                propri = parts[client_id]
+                righe_proprie = np.array([position[int(t)] for t in pool_ids[propri]])
+                test_raccolto.append((propri, X[righe_proprie, :, fine_val:]))
         del X
         return len(batch)
 
@@ -879,8 +978,48 @@ def main(argv: list[str] | None = None) -> int:
     written += flush(batch)
     log.info("Shard scritti: %d/%d", written, len(parts))
 
+    if args.split == "temporal":
+        # test del server: gli ultimi giorni degli stessi indirizzi, già raccolti mentre scrivevo gli shard dei client.
+        # Mancano solo le serie che non sono righe proprie di nessun client (l'insieme condiviso di --mini-dataset), che leggo a parte
+        raccolti = np.concatenate([idx for idx, _ in test_raccolto])
+        blocchi = [x for _, x in test_raccolto]
+        mancanti = np.setdiff1d(indici_test, raccolti)
+        if len(mancanti):
+            X_m, got_ids = load_raw_series(dataset, pool_ids[mancanti], workers=WORKERS)
+            position = {int(t): i for i, t in enumerate(got_ids)}
+            rows = np.array([position[int(t)] for t in pool_ids[mancanti]])
+            blocchi.append(X_m[rows, :, fine_val:])
+            raccolti = np.concatenate([raccolti, mancanti])
+            del X_m
+        # riordino come indici_test, cioè come test_ids e test_y
+        ordine = np.argsort(raccolti, kind="stable")
+        if not np.array_equal(raccolti[ordine], indici_test):
+            raise RuntimeError("Le serie raccolte per il test del server non coincidono con gli indirizzi dei client.")
+        X_test = np.concatenate(blocchi)[ordine]
+        del blocchi, test_raccolto
+
+        log.info(
+            "Scrittura del test del server: %s indirizzi negli ultimi %d giorni",
+            f"{len(test_ids):,}",
+            cfg.SEQ_LEN - fine_val,
+        )
+        test_groups = group_of_ts.reindex(test_ids)
+        test_client_ids = np.asarray(
+            [natural_group_to_client.get(group, -1) for group in test_groups],
+            dtype=np.int64,
+        )
+        write_shard(
+            cfg.server_shard_path(),
+            X_test,
+            test_y,
+            test_ids,
+            test_client_ids=test_client_ids,
+            giorni=(fine_val, cfg.SEQ_LEN),
+        )
+        del X_test
+
     # valido se test set del server è ancora valido altrimenti lo riscrivo
-    if server_test_valido(test_ids):
+    elif server_test_valido(test_ids):
         log.info(
             "Test set del server già presente e con gli stessi %s indirizzi.",
             f"{len(test_ids):,}",
@@ -920,9 +1059,22 @@ def main(argv: list[str] | None = None) -> int:
         "own_per_client": [int(len(p)) for p in parts],
         "donated_per_client": [int(len(p)) for p in prestiti],
         "random_state": cfg.RANDOM_STATE,
+        # stratified = per indirizzi, temporal = stessi indirizzi in periodi diversi; data.py lo legge per dividere addestramento e validazione
+        "split": args.split,
+        # solo con lo split temporale: giorni di ciascun periodo, dal primo incluso all'ultimo escluso, contati da 0 sui 280 della serie
+        "time_split": (
+            {
+                "train_days": [0, fine_train],
+                "val_days": [fine_train, fine_val],
+                "test_days": [fine_val, cfg.SEQ_LEN],
+            }
+            if args.split == "temporal"
+            else None
+        ),
+        # con lo split temporale test_ratio e holdout_val_ratio sono quote di giorni, non di indirizzi
         "test_ratio": cfg.TEST_RATIO,
         "holdout_val_ratio": cfg.VAL_RATIO,
-        "client_val_fraction": cfg.CLIENT_VAL_FRACTION,
+        "client_val_fraction": cfg.CLIENT_VAL_FRACTION if args.split == "stratified" else None,
         "holdout_validation_excluded": bool(args.exclude_holdout_validation),
         "holdout_validation_size": int(len(holdout_val_ids)),
         "class_names": list(cfg.CLASS_NAMES),
@@ -947,6 +1099,11 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(parts)} shard client più il test del server in {cfg.SHARD_ROOT}"
     )
     print(f"Divisione: {args.partition} ({DESCRIZIONE_PARTIZIONE[args.partition]})")
+    if args.split == "temporal":
+        print(
+            f"Split temporale: addestramento giorni 1-{fine_train}, validazione {fine_train + 1}-{fine_val}, "
+            f"test {fine_val + 1}-{cfg.SEQ_LEN} sugli stessi {len(test_ids):,} indirizzi"
+        )
     if args.rebalance_net_device > 0:
         print(
             f"Ribilanciamento: {sum(len(p) for p in prestiti):,} net-device copiati "
